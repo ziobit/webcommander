@@ -9,6 +9,9 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
+define('MC_VERSION', '1.0'); // Increment this for every published update.
+define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
+define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_SESSION_TIMEOUT', 1800);
 define('MC_MAX_EDIT_BYTES', 5 * 1024 * 1024);
 define('MC_MAX_SEARCH_RESULTS', 500);
@@ -160,6 +163,163 @@ function mc_require_csrf(array $data): void {
   if ($expected === '' || $provided === '' || !hash_equals($expected, $provided)) {
     mc_fail('The security token is invalid or expired. Reload the page.', 403);
   }
+}
+
+function mc_update_download(): string {
+  $url = MC_UPDATE_URL . '?cache=' . rawurlencode((string)time());
+  $body = false;
+  $status = 0;
+
+  if (function_exists('curl_init')) {
+    $curl = curl_init($url);
+    if ($curl === false) {
+      throw new RuntimeException('Cannot initialize the update connection.');
+    }
+    curl_setopt_array($curl, [
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_CONNECTTIMEOUT => 8,
+      CURLOPT_TIMEOUT => 20,
+      CURLOPT_USERAGENT => 'WebCommander/' . MC_VERSION,
+      CURLOPT_HTTPHEADER => ['Accept: text/plain', 'Cache-Control: no-cache']
+    ]);
+    $body = curl_exec($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    $error = curl_error($curl);
+    curl_close($curl);
+    if ($body === false) {
+      throw new RuntimeException('Cannot download the update' . ($error !== '' ? ': ' . $error : '.'));
+    }
+  } else {
+    $context = stream_context_create([
+      'http' => [
+        'method' => 'GET',
+        'timeout' => 20,
+        'ignore_errors' => true,
+        'header' => "User-Agent: WebCommander/" . MC_VERSION . "\r\nAccept: text/plain\r\nCache-Control: no-cache\r\n"
+      ],
+      'ssl' => [
+        'verify_peer' => true,
+        'verify_peer_name' => true
+      ]
+    ]);
+    $body = @file_get_contents($url, false, $context, 0, MC_UPDATE_MAX_BYTES + 1);
+    foreach (($http_response_header ?? []) as $header) {
+      if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/i', $header, $matches)) {
+        $status = (int)$matches[1];
+      }
+    }
+    if ($body === false) {
+      throw new RuntimeException('Cannot download the update. Enable cURL or allow_url_fopen and permit outbound HTTPS.');
+    }
+  }
+
+  if ($status < 200 || $status >= 300) {
+    throw new RuntimeException('The update server returned HTTP ' . $status . '.');
+  }
+  if (!is_string($body) || $body === '') {
+    throw new RuntimeException('The update server returned an empty file.');
+  }
+  if (strlen($body) > MC_UPDATE_MAX_BYTES) {
+    throw new RuntimeException('The update file exceeds the allowed size.');
+  }
+  return $body;
+}
+
+function mc_update_source_info(string $source): array {
+  if (strncmp($source, '<?php', 5) !== 0 || strpos($source, 'WebCommander - single-file') === false) {
+    throw new RuntimeException('The downloaded file is not a valid WebCommander source file.');
+  }
+  $pattern = '/define\(\s*[\'"]MC_VERSION[\'"]\s*,\s*[\'"]([0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z.-]+)?)[\'"]\s*\)\s*;/';
+  if (!preg_match($pattern, $source, $matches)) {
+    throw new RuntimeException('The downloaded source does not contain a valid version.');
+  }
+  try {
+    token_get_all($source, TOKEN_PARSE);
+  } catch (ParseError $e) {
+    throw new RuntimeException('The downloaded update failed PHP syntax validation: ' . $e->getMessage());
+  }
+  return [
+    'version' => $matches[1],
+    'sha256' => hash('sha256', $source),
+    'bytes' => strlen($source)
+  ];
+}
+
+function mc_update_can_install(): bool {
+  return is_file(__FILE__) && is_readable(__FILE__) && is_writable(dirname(__FILE__));
+}
+
+function mc_update_install(string $expectedVersion): array {
+  if (!preg_match('/^[0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z.-]+)?$/', $expectedVersion)) {
+    throw new RuntimeException('Invalid expected update version.');
+  }
+  if (!mc_update_can_install()) {
+    throw new RuntimeException('The directory containing WebCommander is not writable by PHP.');
+  }
+
+  $source = mc_update_download();
+  $info = mc_update_source_info($source);
+  if (!hash_equals($expectedVersion, (string)$info['version'])) {
+    throw new RuntimeException('The available version changed. Check for updates again.');
+  }
+  if (!version_compare((string)$info['version'], MC_VERSION, '>')) {
+    throw new RuntimeException('No newer version is available.');
+  }
+
+  $target = __FILE__;
+  $directory = dirname($target);
+  $previous = file_get_contents($target);
+  if ($previous === false) {
+    throw new RuntimeException('Cannot read the current WebCommander source before updating.');
+  }
+
+  $temporary = $directory . DIRECTORY_SEPARATOR . '.webcommander-update-' . bin2hex(random_bytes(8)) . '.tmp';
+  try {
+    $written = file_put_contents($temporary, $source, LOCK_EX);
+    if ($written === false || $written !== strlen($source)) {
+      throw new RuntimeException('Cannot write the temporary update file.');
+    }
+
+    $permissions = fileperms($target);
+    if ($permissions !== false) {
+      @chmod($temporary, $permissions & 0777);
+    }
+
+    $installed = mc_try_fs(function () use ($temporary, $target): bool {
+      return rename($temporary, $target);
+    });
+
+    if (!$installed) {
+      $written = file_put_contents($target, $source, LOCK_EX);
+      @unlink($temporary);
+      if ($written === false || $written !== strlen($source)) {
+        @file_put_contents($target, $previous, LOCK_EX);
+        throw new RuntimeException('Cannot replace the current WebCommander source.');
+      }
+    }
+
+    clearstatcache(true, $target);
+    $installedHash = hash_file('sha256', $target);
+    if ($installedHash === false || !hash_equals((string)$info['sha256'], $installedHash)) {
+      @file_put_contents($target, $previous, LOCK_EX);
+      throw new RuntimeException('Update verification failed; the previous source was restored.');
+    }
+  } catch (Throwable $e) {
+    if (is_file($temporary)) {
+      @unlink($temporary);
+    }
+    throw $e;
+  }
+
+  if (function_exists('opcache_invalidate')) {
+    @opcache_invalidate($target, true);
+  }
+
+  return [
+    'previousVersion' => MC_VERSION,
+    'version' => $info['version'],
+    'sha256' => $info['sha256']
+  ];
 }
 
 function mc_normalize_rel(string $path): string {
@@ -1581,6 +1741,22 @@ if ($authenticated && $action !== '') {
       mc_download_selection($paths);
     }
 
+    if ($action === 'update_check') {
+      $source = mc_update_download();
+      $info = mc_update_source_info($source);
+      mc_ok([
+        'currentVersion' => MC_VERSION,
+        'latestVersion' => $info['version'],
+        'updateAvailable' => version_compare((string)$info['version'], MC_VERSION, '>'),
+        'canInstall' => mc_update_can_install(),
+        'sha256' => $info['sha256']
+      ]);
+    }
+
+    if ($action === 'update_install') {
+      mc_ok(mc_update_install((string)($data['expected_version'] ?? '')));
+    }
+
     if ($action === 'change_password') {
       $current = (string)($data['current'] ?? '');
       $new = (string)($data['new_password'] ?? '');
@@ -1996,6 +2172,8 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-btn:hover, .wc-btn:focus { background: var(--wc-surface-hover); border-color: var(--wc-line-strong); color: var(--wc-text); outline: none; }
     .wc-btn.primary { color: var(--wc-selected-text); background: var(--wc-selected); border-color: var(--wc-line-strong); }
     .wc-btn.danger { color: var(--wc-danger); border-color: var(--wc-danger); background: var(--wc-danger-bg); }
+    .wc-version { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .wc-version i { color: var(--wc-accent); }
     .wc-toolbar { display: flex; gap: 4px; align-items: center; padding: 5px 8px; overflow-x: auto; background: var(--wc-panel-2); border-bottom: 1px solid var(--wc-line); scrollbar-width: thin; scrollbar-color: var(--wc-line) var(--wc-surface); }
     .wc-toolbar .wc-btn { white-space: nowrap; }
     .wc-toolbar-sep { width: 1px; height: 24px; background: var(--wc-line); margin: 0 3px; flex: 0 0 auto; }
@@ -2097,6 +2275,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     @media (max-width: 720px) {
       .wc-topbar { gap: 6px; padding-inline: 7px; }
       .wc-brand > span:last-child, .wc-topbar .wc-btn span { display: none; }
+      .wc-topbar .wc-version span { display: inline; }
       .wc-theme-select { width: 145px; }
     }
     @media (max-width: 560px) {
@@ -2132,6 +2311,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
         <option value="amber">Amber Terminal</option>
       </select>
     </label>
+    <button class="wc-btn wc-version" id="versionButton" data-action="update" title="Version <?= mc_h(MC_VERSION) ?> — check for updates" aria-label="WebCommander version <?= mc_h(MC_VERSION) ?>. Check for updates"><i class="fa-solid fa-cloud-arrow-down"></i><span>v<?= mc_h(MC_VERSION) ?></span></button>
     <button class="wc-btn" data-action="password" title="Change password"><i class="fa-solid fa-key"></i><span>Password</span></button>
     <button class="wc-btn" data-action="logout" title="Sign out"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></button>
   </header>
@@ -3015,6 +3195,31 @@ async function actionPassword() {
   toast('Password changed.');
 }
 
+async function actionUpdate() {
+  const check = await api('update_check');
+  const current = escapeHtml(check.currentVersion);
+  const latest = escapeHtml(check.latestVersion);
+
+  if (!check.updateAvailable) {
+    showContent('WebCommander update', '<div class="text-center py-3"><i class="fa-solid fa-circle-check fa-2x mb-3" style="color:var(--wc-success)"></i><div><strong>v' + current + ' is up to date.</strong></div><div class="wc-result-note mt-2">No newer version is available on GitHub.</div></div>', {wide:false});
+    return;
+  }
+
+  if (!check.canInstall) {
+    showContent('Update available', '<div class="alert alert-warning mb-0"><strong>v' + latest + ' is available.</strong><br>PHP cannot write to the directory containing WebCommander. Make that directory writable, then click the version again.</div>', {wide:false});
+    return;
+  }
+
+  const confirmed = await showForm('Update available', [
+    {type:'html', html:'<div class="mb-3"><strong>WebCommander v' + latest + '</strong> is available. You are using v' + current + '.</div><div class="wc-result-note">The update will be downloaded from the official GitHub repository, syntax-checked, installed, verified, and then the page will reload.</div>'}
+  ], {submitLabel:'Update to v' + check.latestVersion});
+  if (!confirmed) return;
+
+  const result = await api('update_install', {expected_version:check.latestVersion});
+  showContent('Update installed', '<div class="text-center py-3"><i class="fa-solid fa-circle-check fa-2x mb-3" style="color:var(--wc-success)"></i><div><strong>Updated to v' + escapeHtml(result.version) + '.</strong></div><div class="wc-result-note mt-2">Reloading WebCommander…</div></div>', {wide:false});
+  setTimeout(() => location.reload(), 1200);
+}
+
 async function actionLogout() {
   try { await api('logout'); } finally { location.reload(); }
 }
@@ -3023,7 +3228,7 @@ const actionMap = {
   view:actionView, edit:actionEdit, copy:() => actionTransfer('copy'), move:() => actionTransfer('move'), mkdir:actionMkdir,
   delete:actionDelete, 'new-file':actionNewFile, rename:actionRename, upload:() => actionUpload(false), 'upload-folder':() => actionUpload(true),
   download:actionDownload, archive:actionArchive, extract:actionExtract, search:actionSearch, compare:actionCompare, properties:actionProperties,
-  permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, password:actionPassword, logout:actionLogout
+  permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, update:actionUpdate, password:actionPassword, logout:actionLogout
 };
 
 async function runAction(name) {

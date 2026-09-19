@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.1'); // Increment this for every published update.
+define('MC_VERSION', '1.2'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -1988,18 +1988,37 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
   <title>WebCommander</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=IBM+Plex+Mono:wght@400;600&family=JetBrains+Mono:wght@400;600&family=Roboto+Mono:wght@400;600&family=Source+Code+Pro:wght@400;600&family=Ubuntu+Mono:wght@400;700&display=swap" rel="stylesheet">
   <script>
     (() => {
       const themes = ['norton', 'midnight', 'solarized-dark', 'solarized-light', 'nord', 'gruvbox', 'dracula', 'monokai', 'forest', 'paper', 'amber'];
+      const fonts = ['lucida', 'consolas', 'cascadia', 'jetbrains', 'fira', 'source-code', 'ibm-plex', 'roboto', 'ubuntu', 'courier'];
       let theme = 'norton';
+      let font = 'lucida';
       try {
-        const saved = localStorage.getItem('webcommander-theme');
-        if (themes.includes(saved)) theme = saved;
+        const savedTheme = localStorage.getItem('webcommander-theme');
+        const savedFont = localStorage.getItem('webcommander-font');
+        if (themes.includes(savedTheme)) theme = savedTheme;
+        if (fonts.includes(savedFont)) font = savedFont;
       } catch (error) {}
       document.documentElement.dataset.theme = theme;
+      document.documentElement.dataset.font = font;
     })();
   </script>
   <style>
+    :root {
+      --wc-font: "Lucida Console", "Lucida Sans Typewriter", "Courier New", monospace;
+    }
+    html[data-font="lucida"] { --wc-font: "Lucida Console", "Lucida Sans Typewriter", "Courier New", monospace; }
+    html[data-font="consolas"] { --wc-font: Consolas, "Cascadia Mono", "Courier New", monospace; }
+    html[data-font="cascadia"] { --wc-font: "Cascadia Mono", "Cascadia Code", Consolas, monospace; }
+    html[data-font="jetbrains"] { --wc-font: "JetBrains Mono", "Cascadia Mono", Consolas, monospace; }
+    html[data-font="fira"] { --wc-font: "Fira Code", "DejaVu Sans Mono", monospace; }
+    html[data-font="source-code"] { --wc-font: "Source Code Pro", "Liberation Mono", monospace; }
+    html[data-font="ibm-plex"] { --wc-font: "IBM Plex Mono", "DejaVu Sans Mono", monospace; }
+    html[data-font="roboto"] { --wc-font: "Roboto Mono", "DejaVu Sans Mono", monospace; }
+    html[data-font="ubuntu"] { --wc-font: "Ubuntu Mono", "Liberation Mono", monospace; }
+    html[data-font="courier"] { --wc-font: "Courier New", Courier, monospace; }
     :root, html[data-theme="norton"] {
       color-scheme: dark;
       --wc-bg: #000080;
@@ -2288,7 +2307,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; overflow: hidden; }
-    body { margin: 0; background: var(--wc-bg); color: var(--wc-text); font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 13px; }
+    body { margin: 0; background: var(--wc-bg); color: var(--wc-text); font-family: var(--wc-font); font-size: 13px; }
     button, input, select, textarea { font: inherit; }
     .text-secondary { color: var(--wc-muted) !important; }
     .wc-app { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
@@ -2300,6 +2319,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-theme-picker { display: inline-flex; align-items: center; gap: 6px; color: var(--wc-accent); white-space: nowrap; }
     .wc-theme-select { width: 166px; min-height: 31px; border: 1px solid var(--wc-line); border-radius: 6px; color: var(--wc-text); background: var(--wc-surface); padding: 4px 28px 4px 8px; cursor: pointer; }
     .wc-theme-select:hover { border-color: var(--wc-line-strong); }
+    .wc-font-select { width: 154px; }
     .wc-theme-select:focus-visible, .wc-btn:focus-visible, .wc-key:focus-visible, .wc-context button:focus-visible, .wc-dialog-close:focus-visible { border-color: var(--wc-line-strong); outline: 2px solid var(--wc-line-strong); outline-offset: 1px; }
     .wc-btn { border: 1px solid var(--wc-line); border-radius: 6px; color: var(--wc-text); background: var(--wc-panel-2); min-height: 31px; padding: 5px 9px; display: inline-flex; gap: 6px; align-items: center; justify-content: center; cursor: pointer; }
     .wc-btn:hover, .wc-btn:focus { background: var(--wc-surface-hover); border-color: var(--wc-line-strong); color: var(--wc-text); outline: none; }
@@ -2315,14 +2335,14 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-pane.active { border-color: var(--wc-line-strong); box-shadow: 0 0 0 1px var(--wc-line-strong), 0 8px 28px var(--wc-shadow); }
     .wc-pane-head { display: flex; align-items: center; gap: 5px; padding: 6px; border-bottom: 1px solid var(--wc-line); background: var(--wc-panel-2); }
     .wc-pane-head .wc-btn { min-width: 31px; padding: 4px 7px; }
-    .wc-path { min-width: 0; flex: 1; height: 31px; border-radius: 5px; border: 1px solid var(--wc-line); background: var(--wc-surface); color: var(--wc-text); padding: 4px 8px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .wc-path { min-width: 0; flex: 1; height: 31px; border-radius: 5px; border: 1px solid var(--wc-line); background: var(--wc-surface); color: var(--wc-text); padding: 4px 8px; font-family: var(--wc-font); }
     .wc-path:focus, .wc-filter:focus, .wc-input:focus, .wc-select:focus, .wc-textarea:focus { outline: 2px solid var(--wc-line-strong); outline-offset: 1px; border-color: var(--wc-line-strong); }
     .wc-pane-tools { display: flex; align-items: center; gap: 6px; padding: 5px 7px; background: var(--wc-panel-2); border-bottom: 1px solid var(--wc-line); }
     .wc-filter { flex: 1; min-width: 0; height: 27px; border: 1px solid var(--wc-line); border-radius: 5px; background: var(--wc-surface); color: var(--wc-text); padding: 3px 8px; }
     .wc-path::placeholder, .wc-filter::placeholder, .wc-input::placeholder, .wc-textarea::placeholder { color: var(--wc-muted); opacity: .9; }
     .wc-check-label { display: inline-flex; align-items: center; gap: 4px; color: var(--wc-muted); white-space: nowrap; }
     .wc-table-wrap { min-height: 0; overflow: auto; position: relative; scrollbar-color: var(--wc-line) var(--wc-surface); scrollbar-width: thin; }
-    .wc-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    .wc-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: var(--wc-font); font-size: 12px; }
     .wc-table th { position: sticky; top: 0; z-index: 2; height: 29px; background: var(--wc-panel-2); color: var(--wc-muted); text-align: left; font-weight: 650; border-bottom: 1px solid var(--wc-line); padding: 4px 6px; cursor: pointer; user-select: none; }
     .wc-table th:first-child { width: 30px; cursor: default; }
     .wc-table th.name { width: auto; }
@@ -2384,23 +2404,27 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-result-note { color: var(--wc-muted); font-size: 11px; }
     .wc-tree-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 9px; }
     .wc-tree-tools .wc-result-note { flex: 1; min-width: 220px; }
-    .wc-tree-view { max-height: calc(100vh - 260px); overflow: auto; padding: 7px; border: 1px solid var(--wc-line); border-radius: 6px; background: var(--wc-surface); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .wc-tree-view { max-height: calc(100vh - 260px); overflow: auto; padding: 7px; border: 1px solid var(--wc-line); border-radius: 6px; background: var(--wc-surface); font-family: var(--wc-font); }
     .wc-tree-node { margin: 0; }
-    .wc-tree-node > summary { display: flex; align-items: center; gap: 7px; min-height: 29px; padding: 4px 7px; border-radius: 4px; cursor: pointer; list-style: none; }
+    .wc-tree-node > summary { display: flex; align-items: center; gap: 7px; min-width: 720px; min-height: 31px; padding: 4px 7px; border-radius: 4px; cursor: pointer; list-style: none; }
     .wc-tree-node > summary::-webkit-details-marker { display: none; }
     .wc-tree-node > summary::before { content: '▸'; flex: 0 0 12px; color: var(--wc-accent); transition: transform .12s ease; }
     .wc-tree-node[open] > summary::before { transform: rotate(90deg); }
     .wc-tree-node.leaf > summary::before { content: '•'; transform: none; color: var(--wc-muted); }
     .wc-tree-node > summary:hover, .wc-tree-node > summary:focus-visible { background: var(--wc-surface-hover); outline: none; }
-    .wc-tree-label { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+    .wc-tree-label { display: flex; align-items: center; gap: 6px; min-width: 120px; flex: 1; }
     .wc-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .wc-tree-meta { flex: 0 0 auto; color: var(--wc-muted); font-size: 11px; white-space: nowrap; }
+    .wc-tree-usage { display: grid; grid-template-columns: 120px 49px; align-items: center; gap: 7px; flex: 0 0 auto; }
+    .wc-tree-bar { height: 9px; overflow: hidden; border: 1px solid var(--wc-line); border-radius: 999px; background: var(--wc-panel-2); }
+    .wc-tree-bar > span { display: block; height: 100%; min-width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--wc-accent), var(--wc-folder)); }
+    .wc-tree-percent { color: var(--wc-text); font-size: 11px; text-align: right; white-space: nowrap; }
+    .wc-tree-meta { flex: 0 0 265px; color: var(--wc-muted); font-size: 11px; text-align: right; white-space: nowrap; }
     .wc-tree-children { margin-left: 12px; padding-left: 9px; border-left: 1px solid var(--wc-grid); }
     .wc-tree-node.unreadable > summary .wc-tree-name, .wc-tree-node.unreadable > summary .wc-tree-meta { color: var(--wc-danger); }
     .wc-info-table { width: 100%; border-collapse: collapse; }
     .wc-info-table th, .wc-info-table td { padding: 6px 8px; border-bottom: 1px solid var(--wc-line); text-align: left; vertical-align: top; }
     .wc-info-table th { width: 145px; color: var(--wc-muted); font-weight: 600; }
-    .wc-mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
+    .wc-mono { font-family: var(--wc-font); word-break: break-all; }
     .wc-context { display: none; position: fixed; z-index: 5000; min-width: 170px; padding: 5px; background: var(--wc-panel-2); border: 1px solid var(--wc-line-strong); border-radius: 7px; box-shadow: 0 15px 40px var(--wc-shadow); }
     .wc-context.show { display: block; }
     .wc-context button { width: 100%; border: 0; border-radius: 4px; color: var(--wc-text); background: transparent; padding: 6px 8px; text-align: left; }
@@ -2408,7 +2432,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-toast-area { position: fixed; right: 12px; top: 58px; z-index: 6000; display: flex; flex-direction: column; gap: 7px; pointer-events: none; }
     .wc-toast { max-width: min(430px, calc(100vw - 24px)); padding: 10px 12px; background: var(--wc-panel-2); border: 1px solid var(--wc-line-strong); border-radius: 7px; color: var(--wc-text); box-shadow: 0 10px 30px var(--wc-shadow); animation: wc-in .15s ease-out; }
     .wc-toast.error { color: var(--wc-danger); background: var(--wc-danger-bg); border-color: var(--wc-danger); }
-    html[data-theme="norton"] body { font-family: "Lucida Console", "Courier New", ui-monospace, monospace; }
+    html[data-theme="norton"] body { font-family: var(--wc-font); }
     html[data-theme="norton"] .wc-pane, html[data-theme="norton"] .wc-btn, html[data-theme="norton"] .wc-theme-select, html[data-theme="norton"] .wc-path, html[data-theme="norton"] .wc-filter, html[data-theme="norton"] .wc-dialog, html[data-theme="norton"] .wc-input, html[data-theme="norton"] .wc-select, html[data-theme="norton"] .wc-textarea, html[data-theme="norton"] .wc-viewer, html[data-theme="norton"] .wc-result-list, html[data-theme="norton"] .wc-tree-view, html[data-theme="norton"] .wc-context, html[data-theme="norton"] .wc-toast, html[data-theme="norton"] .wc-brand-mark { border-radius: 0; }
     html[data-theme="norton"] .wc-pane { box-shadow: none; }
     html[data-theme="norton"] .wc-pane.active { box-shadow: 0 0 0 1px var(--wc-line-strong); }
@@ -2434,6 +2458,10 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       .wc-theme-picker > i { display: none; }
       .wc-theme-select { width: 124px; }
     }
+    @media (max-width: 440px) {
+      .wc-topbar { gap: 4px; padding-inline: 5px; }
+      .wc-theme-select { width: 92px; padding-inline: 5px 20px; }
+    }
   </style>
 </head>
 <body>
@@ -2457,6 +2485,22 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
         <option value="forest">Forest</option>
         <option value="paper">Paper Light</option>
         <option value="amber">Amber Terminal</option>
+      </select>
+    </label>
+    <label class="wc-theme-picker" title="Fixed-width interface font">
+      <i class="fa-solid fa-font" aria-hidden="true"></i>
+      <span class="visually-hidden">Interface font</span>
+      <select class="wc-theme-select wc-font-select" id="fontSelect" aria-label="Fixed-width interface font">
+        <option value="lucida">Lucida Console</option>
+        <option value="consolas">Consolas</option>
+        <option value="cascadia">Cascadia Mono</option>
+        <option value="jetbrains">JetBrains Mono</option>
+        <option value="fira">Fira Code</option>
+        <option value="source-code">Source Code Pro</option>
+        <option value="ibm-plex">IBM Plex Mono</option>
+        <option value="roboto">Roboto Mono</option>
+        <option value="ubuntu">Ubuntu Mono</option>
+        <option value="courier">Courier New</option>
       </select>
     </label>
     <button class="wc-btn wc-version" id="versionButton" data-action="update" title="Version <?= mc_h(MC_VERSION) ?> — check for updates" aria-label="WebCommander version <?= mc_h(MC_VERSION) ?>. Check for updates"><i class="fa-solid fa-cloud-arrow-down"></i><span>v<?= mc_h(MC_VERSION) ?></span></button>
@@ -2548,6 +2592,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
   <button data-action="move"><i class="fa-solid fa-right-left fa-fw me-2"></i>Move</button>
   <button data-action="rename"><i class="fa-solid fa-i-cursor fa-fw me-2"></i>Rename</button>
   <button data-action="properties"><i class="fa-solid fa-circle-info fa-fw me-2"></i>Properties</button>
+  <button data-action="tree-selected" id="contextTree"><i class="fa-solid fa-folder-tree fa-fw me-2"></i>Tree</button>
   <button data-action="delete"><i class="fa-solid fa-trash fa-fw me-2"></i>Delete</button>
 </div>
 
@@ -2637,6 +2682,7 @@ function toast(message, error = false, timeout = 3500) {
 }
 
 const THEME_IDS = new Set(['norton', 'midnight', 'solarized-dark', 'solarized-light', 'nord', 'gruvbox', 'dracula', 'monokai', 'forest', 'paper', 'amber']);
+const FONT_IDS = new Set(['lucida', 'consolas', 'cascadia', 'jetbrains', 'fira', 'source-code', 'ibm-plex', 'roboto', 'ubuntu', 'courier']);
 
 function applyTheme(theme, remember = true) {
   const nextTheme = THEME_IDS.has(theme) ? theme : 'norton';
@@ -2647,10 +2693,24 @@ function applyTheme(theme, remember = true) {
   }
 }
 
+function applyFont(font, remember = true) {
+  const nextFont = FONT_IDS.has(font) ? font : 'lucida';
+  document.documentElement.dataset.font = nextFont;
+  $('#fontSelect').value = nextFont;
+  if (remember) {
+    try { localStorage.setItem('webcommander-font', nextFont); } catch (error) {}
+  }
+}
+
 applyTheme(document.documentElement.dataset.theme, false);
+applyFont(document.documentElement.dataset.font, false);
 $('#themeSelect').addEventListener('change', event => {
   applyTheme(event.target.value);
   toast(`Theme: ${event.target.selectedOptions[0].textContent}`);
+});
+$('#fontSelect').addEventListener('change', event => {
+  applyFont(event.target.value);
+  toast(`Font: ${event.target.selectedOptions[0].textContent}`);
 });
 
 function setBusy(on, message = 'Working…') {
@@ -2881,10 +2941,10 @@ class Pane {
     if (!this.selected.has(item.path)) {
       this.selected.clear();
       this.selected.add(item.path);
-      this.focused = item.path;
-      this.renderRowsOnly();
     }
-    showContext(event.clientX, event.clientY);
+    this.focused = item.path;
+    this.renderRowsOnly();
+    showContext(event.clientX, event.clientY, item.type === 'dir' || item.navigable);
   }
 
   handleDragStart(event) {
@@ -3269,27 +3329,38 @@ async function actionSearch() {
   }));
 }
 
-function treeNodeHtml(node, depth = 0) {
+function largestTreeFolderSize(node) {
+  const children = Array.isArray(node.children) ? node.children : [];
+  return children.reduce((largest, child) => Math.max(largest, largestTreeFolderSize(child)), Math.max(0, Number(node.size) || 0));
+}
+
+function treeNodeHtml(node, largestSize, depth = 0) {
   const children = Array.isArray(node.children) ? node.children : [];
   const folderLabel = node.folders === 1 ? 'folder' : 'folders';
   const fileLabel = node.files === 1 ? 'file' : 'files';
   const classes = ['wc-tree-node'];
   if (!children.length) classes.push('leaf');
   if (node.unreadable) classes.push('unreadable');
-  const open = depth < 2 ? ' open' : '';
-  const childrenHtml = children.length ? '<div class="wc-tree-children">' + children.map(child => treeNodeHtml(child, depth + 1)).join('') + '</div>' : '';
+  const size = Math.max(0, Number(node.size) || 0);
+  const percent = largestSize > 0 ? Math.min(100, size / largestSize * 100) : 0;
+  const percentText = percent > 0 && percent < 0.1 ? '<0.1%' : percent.toLocaleString(undefined, {maximumFractionDigits:1}) + '%';
+  const open = depth === 0 ? ' open' : '';
+  const childrenHtml = children.length ? '<div class="wc-tree-children">' + children.map(child => treeNodeHtml(child, largestSize, depth + 1)).join('') + '</div>' : '';
   const unreadable = node.unreadable ? ' · unreadable' : '';
-  return '<details class="' + classes.join(' ') + '"' + open + '><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span><span class="wc-tree-meta">' + formatBytes(node.size) + ' · ' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
+  const usage = '<span class="wc-tree-usage" title="' + escapeHtml(percentText) + ' of the largest folder (' + escapeHtml(formatBytes(largestSize)) + ')"><span class="wc-tree-bar" aria-hidden="true"><span style="width:' + percent.toFixed(3) + '%"></span></span><span class="wc-tree-percent">' + escapeHtml(percentText) + '</span></span>';
+  return '<details class="' + classes.join(' ') + '"' + open + '><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span>' + usage + '<span class="wc-tree-meta">' + formatBytes(size) + ' · ' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
 }
 
-async function actionTree() {
+async function actionTree(basePath = null) {
   const pane = activePane();
-  const result = await api('tree', {path:pane.path, hidden:pane.showHidden});
+  const treePath = basePath === null ? pane.path : basePath;
+  const result = await api('tree', {path:treePath, hidden:pane.showHidden});
+  const largestSize = largestTreeFolderSize(result.tree);
   const hiddenNote = result.hidden ? 'Hidden items included' : 'Hidden items excluded';
   const unreadable = result.unreadableCount ? '<div class="alert alert-warning py-2 mb-2">' + Number(result.unreadableCount).toLocaleString() + ' item(s) could not be fully read, so affected totals may be incomplete.</div>' : '';
   const tools = '<div class="wc-tree-tools"><button class="wc-btn" id="treeExpandAll" type="button"><i class="fa-solid fa-angles-down"></i> Expand all</button><button class="wc-btn" id="treeCollapseAll" type="button"><i class="fa-solid fa-angles-up"></i> Collapse all</button><div class="wc-result-note">' + formatBytes(result.tree.size) + ' · ' + Number(result.folderCount).toLocaleString() + ' folders · ' + Number(result.fileCount).toLocaleString() + ' files · ' + hiddenNote + '</div></div>';
-  const help = '<div class="wc-result-note mb-2">Sizes include each folder’s full visible subtree. Symlinks are not followed. Double-click a folder to open it; Shift + double-click opens it in the other pane.</div>';
-  showContent('Folder tree: ' + fullPathDisplay(result.base), tools + help + unreadable + '<div class="wc-tree-view" id="treeView">' + treeNodeHtml(result.tree) + '</div>');
+  const help = '<div class="wc-result-note mb-2">Each bar is relative to the largest folder (100%). Subfolders start collapsed. Sizes include the full visible subtree; symlinks are not followed. Double-click a folder to open it; Shift + double-click opens it in the other pane.</div>';
+  showContent('Folder tree: ' + fullPathDisplay(result.base), tools + help + unreadable + '<div class="wc-tree-view" id="treeView">' + treeNodeHtml(result.tree, largestSize) + '</div>');
 
   const treeView = $('#treeView');
   $('#treeExpandAll').addEventListener('click', () => $$('details', treeView).forEach(node => { node.open = true; }));
@@ -3304,6 +3375,15 @@ async function actionTree() {
       targetPane.load(path);
     });
   });
+}
+
+async function actionTreeSelected() {
+  const pane = activePane();
+  const item = pane.items.find(candidate => candidate.path === pane.focused);
+  if (!item || (item.type !== 'dir' && !item.navigable)) {
+    throw new Error('Right-click a folder to view its tree.');
+  }
+  await actionTree(item.path);
 }
 
 async function actionCompare() {
@@ -3413,7 +3493,7 @@ async function actionLogout() {
 const actionMap = {
   view:actionView, edit:actionEdit, copy:() => actionTransfer('copy'), move:() => actionTransfer('move'), mkdir:actionMkdir,
   delete:actionDelete, 'new-file':actionNewFile, rename:actionRename, upload:() => actionUpload(false), 'upload-folder':() => actionUpload(true),
-  download:actionDownload, archive:actionArchive, extract:actionExtract, search:actionSearch, tree:actionTree, compare:actionCompare, properties:actionProperties,
+  download:actionDownload, archive:actionArchive, extract:actionExtract, search:actionSearch, tree:actionTree, 'tree-selected':actionTreeSelected, compare:actionCompare, properties:actionProperties,
   permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, update:actionUpdate, password:actionPassword, logout:actionLogout
 };
 
@@ -3430,8 +3510,9 @@ $$('[data-action]').forEach(button => button.addEventListener('click', event => 
   runAction(button.dataset.action);
 }));
 
-function showContext(x, y) {
+function showContext(x, y, canShowTree = false) {
   const menu = $('#contextMenu');
+  $('#contextTree').style.display = canShowTree ? '' : 'none';
   menu.classList.add('show');
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.max(5, Math.min(x, innerWidth - rect.width - 5)) + 'px';

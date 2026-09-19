@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.3'); // Increment this for every published update.
+define('MC_VERSION', '1.4'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -2428,8 +2428,9 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .wc-tree-usage { display: grid; grid-template-columns: 120px 49px; align-items: center; gap: 7px; flex: 0 0 auto; }
     .wc-tree-bar { height: 9px; overflow: hidden; border: 1px solid var(--wc-line); border-radius: 999px; background: var(--wc-panel-2); }
-    .wc-tree-bar > span { display: block; height: 100%; min-width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--wc-accent), var(--wc-folder)); }
+    .wc-tree-bar > span { display: block; height: 100%; min-width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--wc-accent), var(--wc-folder)); transition: width .16s ease; }
     .wc-tree-percent { color: var(--wc-text); font-size: .85em; text-align: right; white-space: nowrap; }
+    .wc-tree-node.wc-tree-baseline > summary { background: var(--wc-surface-hover); box-shadow: inset 3px 0 0 var(--wc-accent); }
     .wc-tree-meta { flex: 0 0 265px; color: var(--wc-muted); font-size: .85em; text-align: right; white-space: nowrap; }
     .wc-tree-children { margin-left: 12px; padding-left: 9px; border-left: 1px solid var(--wc-grid); }
     .wc-tree-node.unreadable > summary .wc-tree-name, .wc-tree-node.unreadable > summary .wc-tree-meta { color: var(--wc-danger); }
@@ -3387,12 +3388,17 @@ async function actionSearch() {
   }));
 }
 
-function largestTreeFolderSize(node) {
-  const children = Array.isArray(node.children) ? node.children : [];
-  return children.reduce((largest, child) => Math.max(largest, largestTreeFolderSize(child)), Math.max(0, Number(node.size) || 0));
+function treePercentage(size, total, isBaseline = false) {
+  if (isBaseline) return 100;
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, size / total * 100));
 }
 
-function treeNodeHtml(node, largestSize, depth = 0) {
+function treePercentageText(percent) {
+  return percent > 0 && percent < 0.1 ? '<0.1%' : percent.toLocaleString(undefined, {maximumFractionDigits:1}) + '%';
+}
+
+function treeNodeHtml(node, baselineSize, depth = 0) {
   const children = Array.isArray(node.children) ? node.children : [];
   const folderLabel = node.folders === 1 ? 'folder' : 'folders';
   const fileLabel = node.files === 1 ? 'file' : 'files';
@@ -3400,29 +3406,102 @@ function treeNodeHtml(node, largestSize, depth = 0) {
   if (!children.length) classes.push('leaf');
   if (node.unreadable) classes.push('unreadable');
   const size = Math.max(0, Number(node.size) || 0);
-  const percent = largestSize > 0 ? Math.min(100, size / largestSize * 100) : 0;
-  const percentText = percent > 0 && percent < 0.1 ? '<0.1%' : percent.toLocaleString(undefined, {maximumFractionDigits:1}) + '%';
+  const percent = treePercentage(size, baselineSize, depth === 0);
+  const percentText = treePercentageText(percent);
   const open = depth === 0 ? ' open' : '';
-  const childrenHtml = children.length ? '<div class="wc-tree-children">' + children.map(child => treeNodeHtml(child, largestSize, depth + 1)).join('') + '</div>' : '';
+  const childrenHtml = children.length ? '<div class="wc-tree-children">' + children.map(child => treeNodeHtml(child, baselineSize, depth + 1)).join('') + '</div>' : '';
   const unreadable = node.unreadable ? ' · unreadable' : '';
-  const usage = '<span class="wc-tree-usage" title="' + escapeHtml(percentText) + ' of the largest folder (' + escapeHtml(formatBytes(largestSize)) + ')"><span class="wc-tree-bar" aria-hidden="true"><span style="width:' + percent.toFixed(3) + '%"></span></span><span class="wc-tree-percent">' + escapeHtml(percentText) + '</span></span>';
-  return '<details class="' + classes.join(' ') + '"' + open + '><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span>' + usage + '<span class="wc-tree-meta">' + formatBytes(size) + ' · ' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
+  const usage = '<span class="wc-tree-usage" title="' + escapeHtml(percentText) + ' of the current 100% folder (' + escapeHtml(formatBytes(baselineSize)) + ')"><span class="wc-tree-bar" aria-hidden="true"><span style="width:' + percent.toFixed(3) + '%"></span></span><span class="wc-tree-percent">' + escapeHtml(percentText) + '</span></span>';
+  return '<details class="' + classes.join(' ') + '"' + open + ' data-tree-size="' + size + '"><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span>' + usage + '<span class="wc-tree-meta">' + formatBytes(size) + ' · ' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
+}
+
+function updateTreeNodePercentage(details, baselineSize, baselineName, isBaseline = false) {
+  const summary = details.firstElementChild;
+  if (!summary) return;
+  const size = Math.max(0, Number(details.dataset.treeSize) || 0);
+  const percent = treePercentage(size, baselineSize, isBaseline);
+  const percentText = treePercentageText(percent);
+  const bar = $('.wc-tree-bar > span', summary);
+  const percentNode = $('.wc-tree-percent', summary);
+  const usage = $('.wc-tree-usage', summary);
+  if (bar) bar.style.width = percent.toFixed(3) + '%';
+  if (percentNode) percentNode.textContent = percentText;
+  if (usage) usage.title = percentText + ' of ' + baselineName + ' (' + formatBytes(baselineSize) + ')';
+}
+
+function setTreeBaseline(treeView, baseline) {
+  if (!baseline) return;
+  const root = $('.wc-tree-node', treeView);
+  if (!root) return;
+
+  const rootSummary = root.firstElementChild;
+  const rootName = $('.wc-tree-name', rootSummary)?.textContent || '/';
+  const rootSize = Math.max(0, Number(root.dataset.treeSize) || 0);
+  const allNodes = [root, ...$$('.wc-tree-node', root)];
+  allNodes.forEach(node => updateTreeNodePercentage(node, rootSize, rootName, node === root));
+
+  const baselineSummary = baseline.firstElementChild;
+  const baselineName = $('.wc-tree-name', baselineSummary)?.textContent || '/';
+  const baselineSize = Math.max(0, Number(baseline.dataset.treeSize) || 0);
+  const branchNodes = [baseline, ...$$('.wc-tree-node', baseline)];
+  branchNodes.forEach(node => updateTreeNodePercentage(node, baselineSize, baselineName, node === baseline));
+
+  $$('.wc-tree-baseline', treeView).forEach(node => node.classList.remove('wc-tree-baseline'));
+  baseline.classList.add('wc-tree-baseline');
+  const note = $('#treeBaselineNote');
+  if (note) note.textContent = '100% = ' + baselineName + ' (' + formatBytes(baselineSize) + ')';
 }
 
 async function actionTree(basePath = null) {
   const pane = activePane();
   const treePath = basePath === null ? pane.path : basePath;
   const result = await api('tree', {path:treePath, hidden:pane.showHidden});
-  const largestSize = largestTreeFolderSize(result.tree);
+  const rootSize = Math.max(0, Number(result.tree.size) || 0);
   const hiddenNote = result.hidden ? 'Hidden items included' : 'Hidden items excluded';
   const unreadable = result.unreadableCount ? '<div class="alert alert-warning py-2 mb-2">' + Number(result.unreadableCount).toLocaleString() + ' item(s) could not be fully read, so affected totals may be incomplete.</div>' : '';
   const tools = '<div class="wc-tree-tools"><button class="wc-btn" id="treeExpandAll" type="button"><i class="fa-solid fa-angles-down"></i> Expand all</button><button class="wc-btn" id="treeCollapseAll" type="button"><i class="fa-solid fa-angles-up"></i> Collapse all</button><div class="wc-result-note">' + formatBytes(result.tree.size) + ' · ' + Number(result.folderCount).toLocaleString() + ' folders · ' + Number(result.fileCount).toLocaleString() + ' files · ' + hiddenNote + '</div></div>';
-  const help = '<div class="wc-result-note mb-2">Each bar is relative to the largest folder (100%). Subfolders start collapsed. Sizes include the full visible subtree; symlinks are not followed. Double-click a folder to open it; Shift + double-click opens it in the other pane.</div>';
-  showContent('Folder tree: ' + fullPathDisplay(result.base), tools + help + unreadable + '<div class="wc-tree-view" id="treeView">' + treeNodeHtml(result.tree, largestSize) + '</div>');
+  const help = '<div class="wc-result-note mb-2"><strong id="treeBaselineNote">100% = ' + escapeHtml(result.tree.name) + ' (' + escapeHtml(formatBytes(rootSize)) + ')</strong> · Opening a folder makes it the new 100% baseline; every descendant is measured against that folder’s recursive total. Subfolders start collapsed, and symlinks are not followed. Double-click opens a folder; Shift + double-click opens it in the other pane.</div>';
+  showContent('Folder tree: ' + fullPathDisplay(result.base), tools + help + unreadable + '<div class="wc-tree-view" id="treeView">' + treeNodeHtml(result.tree, rootSize) + '</div>');
 
   const treeView = $('#treeView');
-  $('#treeExpandAll').addEventListener('click', () => $$('details', treeView).forEach(node => { node.open = true; }));
-  $('#treeCollapseAll').addEventListener('click', () => $$('details', treeView).forEach((node, index) => { node.open = index === 0; }));
+  const rootNode = $('.wc-tree-node', treeView);
+  const treeNodes = $$('.wc-tree-node', treeView);
+  let suppressTreeToggle = false;
+  setTreeBaseline(treeView, rootNode);
+
+  const finishBulkToggle = () => {
+    setTimeout(() => {
+      suppressTreeToggle = false;
+      setTreeBaseline(treeView, rootNode);
+    }, 50);
+  };
+
+  $('#treeExpandAll').addEventListener('click', () => {
+    suppressTreeToggle = true;
+    treeNodes.forEach(node => { node.open = true; });
+    finishBulkToggle();
+  });
+  $('#treeCollapseAll').addEventListener('click', () => {
+    suppressTreeToggle = true;
+    treeNodes.forEach((node, index) => { node.open = index === 0; });
+    finishBulkToggle();
+  });
+
+  treeNodes.forEach(node => {
+    node.addEventListener('toggle', () => {
+      if (suppressTreeToggle) return;
+      if (node.open) {
+        setTreeBaseline(treeView, node);
+        return;
+      }
+      const current = $('.wc-tree-baseline', treeView);
+      if (current && (current === node || node.contains(current))) {
+        const parent = node.parentElement ? node.parentElement.closest('.wc-tree-node') : null;
+        setTreeBaseline(treeView, parent || rootNode);
+      }
+    });
+  });
+
   $$('.wc-tree-node > summary[data-tree-path]', treeView).forEach(summary => {
     summary.addEventListener('dblclick', event => {
       event.preventDefault();

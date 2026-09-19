@@ -9,9 +9,12 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.0'); // Increment this for every published update.
+define('MC_VERSION', '1.1'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
+define('MC_MAX_TREE_ITEMS', 200000);
+define('MC_MAX_TREE_FOLDERS', 10000);
+define('MC_MAX_TREE_DEPTH', 64);
 define('MC_SESSION_TIMEOUT', 1800);
 define('MC_MAX_EDIT_BYTES', 5 * 1024 * 1024);
 define('MC_MAX_SEARCH_RESULTS', 500);
@@ -816,6 +819,102 @@ function mc_directory_size(string $path, int &$items): int {
     }
   }
   return $total;
+}
+
+function mc_directory_tree_node(
+  string $path,
+  string $rel,
+  bool $includeHidden,
+  int $depth,
+  int &$scannedItems,
+  int &$folderCount,
+  int &$fileCount,
+  int &$unreadableCount
+): array {
+  if ($depth > MC_MAX_TREE_DEPTH) {
+    throw new RuntimeException('The directory tree is deeper than the safe limit.');
+  }
+
+  $folderCount++;
+  if ($folderCount > MC_MAX_TREE_FOLDERS) {
+    throw new RuntimeException('The tree contains too many folders. Start from a narrower directory.');
+  }
+
+  $name = $rel === '' ? '/' : basename(str_replace('/', DIRECTORY_SEPARATOR, $rel));
+  $node = [
+    'name' => $name,
+    'path' => $rel,
+    'size' => 0,
+    'files' => 0,
+    'folders' => 0,
+    'unreadable' => false,
+    'children' => []
+  ];
+
+  if (!is_readable($path)) {
+    $node['unreadable'] = true;
+    $unreadableCount++;
+    return $node;
+  }
+
+  $names = scandir($path);
+  if ($names === false) {
+    $node['unreadable'] = true;
+    $unreadableCount++;
+    return $node;
+  }
+
+  $names = array_values(array_filter($names, function (string $entry) use ($includeHidden): bool {
+    if ($entry === '.' || $entry === '..') {
+      return false;
+    }
+    return $includeHidden || $entry === '' || $entry[0] !== '.';
+  }));
+  usort($names, 'strnatcasecmp');
+
+  foreach ($names as $entry) {
+    $child = $path . DIRECTORY_SEPARATOR . $entry;
+    if ($child === MC_CONFIG_FILE) {
+      continue;
+    }
+
+    $scannedItems++;
+    if ($scannedItems > MC_MAX_TREE_ITEMS) {
+      throw new RuntimeException('The tree contains too many items to calculate safely. Start from a narrower directory.');
+    }
+
+    $childRel = $rel === '' ? $entry : $rel . '/' . $entry;
+    if (is_dir($child) && !is_link($child)) {
+      $childNode = mc_directory_tree_node(
+        $child,
+        $childRel,
+        $includeHidden,
+        $depth + 1,
+        $scannedItems,
+        $folderCount,
+        $fileCount,
+        $unreadableCount
+      );
+      $node['children'][] = $childNode;
+      $node['size'] += $childNode['size'];
+      $node['files'] += $childNode['files'];
+      $node['folders'] += 1 + $childNode['folders'];
+      continue;
+    }
+
+    $fileCount++;
+    $node['files']++;
+    if (is_file($child) && !is_link($child)) {
+      $size = filesize($child);
+      if ($size === false) {
+        $unreadableCount++;
+      } else {
+        $node['size'] += (int)$size;
+      }
+    }
+  }
+
+  return $node;
 }
 
 function mc_stream_file(string $path, bool $download): void {
@@ -1721,6 +1820,40 @@ if ($authenticated && $action !== '') {
       mc_ok(mc_search((string)($data['base'] ?? ''), $data));
     }
 
+    if ($action === 'tree') {
+      $rel = mc_normalize_rel((string)($data['path'] ?? ''));
+      $path = mc_existing_path($rel);
+      if (!is_dir($path)) {
+        throw new RuntimeException('The selected path is not a directory.');
+      }
+
+      $scannedItems = 0;
+      $folderCount = 0;
+      $fileCount = 0;
+      $unreadableCount = 0;
+      $includeHidden = !empty($data['hidden']);
+      $tree = mc_directory_tree_node(
+        $path,
+        $rel,
+        $includeHidden,
+        0,
+        $scannedItems,
+        $folderCount,
+        $fileCount,
+        $unreadableCount
+      );
+
+      mc_ok([
+        'tree' => $tree,
+        'base' => $rel,
+        'hidden' => $includeHidden,
+        'scannedItems' => $scannedItems,
+        'folderCount' => $folderCount,
+        'fileCount' => $fileCount,
+        'unreadableCount' => $unreadableCount
+      ]);
+    }
+
     if ($action === 'compare') {
       $mode = (string)($data['mode'] ?? 'quick');
       if (!in_array($mode, ['quick', 'checksum'], true)) {
@@ -2249,6 +2382,21 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-result:hover { background: var(--wc-surface-hover); }
     .wc-result-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .wc-result-note { color: var(--wc-muted); font-size: 11px; }
+    .wc-tree-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 9px; }
+    .wc-tree-tools .wc-result-note { flex: 1; min-width: 220px; }
+    .wc-tree-view { max-height: calc(100vh - 260px); overflow: auto; padding: 7px; border: 1px solid var(--wc-line); border-radius: 6px; background: var(--wc-surface); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .wc-tree-node { margin: 0; }
+    .wc-tree-node > summary { display: flex; align-items: center; gap: 7px; min-height: 29px; padding: 4px 7px; border-radius: 4px; cursor: pointer; list-style: none; }
+    .wc-tree-node > summary::-webkit-details-marker { display: none; }
+    .wc-tree-node > summary::before { content: '▸'; flex: 0 0 12px; color: var(--wc-accent); transition: transform .12s ease; }
+    .wc-tree-node[open] > summary::before { transform: rotate(90deg); }
+    .wc-tree-node.leaf > summary::before { content: '•'; transform: none; color: var(--wc-muted); }
+    .wc-tree-node > summary:hover, .wc-tree-node > summary:focus-visible { background: var(--wc-surface-hover); outline: none; }
+    .wc-tree-label { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+    .wc-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wc-tree-meta { flex: 0 0 auto; color: var(--wc-muted); font-size: 11px; white-space: nowrap; }
+    .wc-tree-children { margin-left: 12px; padding-left: 9px; border-left: 1px solid var(--wc-grid); }
+    .wc-tree-node.unreadable > summary .wc-tree-name, .wc-tree-node.unreadable > summary .wc-tree-meta { color: var(--wc-danger); }
     .wc-info-table { width: 100%; border-collapse: collapse; }
     .wc-info-table th, .wc-info-table td { padding: 6px 8px; border-bottom: 1px solid var(--wc-line); text-align: left; vertical-align: top; }
     .wc-info-table th { width: 145px; color: var(--wc-muted); font-weight: 600; }
@@ -2261,7 +2409,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-toast { max-width: min(430px, calc(100vw - 24px)); padding: 10px 12px; background: var(--wc-panel-2); border: 1px solid var(--wc-line-strong); border-radius: 7px; color: var(--wc-text); box-shadow: 0 10px 30px var(--wc-shadow); animation: wc-in .15s ease-out; }
     .wc-toast.error { color: var(--wc-danger); background: var(--wc-danger-bg); border-color: var(--wc-danger); }
     html[data-theme="norton"] body { font-family: "Lucida Console", "Courier New", ui-monospace, monospace; }
-    html[data-theme="norton"] .wc-pane, html[data-theme="norton"] .wc-btn, html[data-theme="norton"] .wc-theme-select, html[data-theme="norton"] .wc-path, html[data-theme="norton"] .wc-filter, html[data-theme="norton"] .wc-dialog, html[data-theme="norton"] .wc-input, html[data-theme="norton"] .wc-select, html[data-theme="norton"] .wc-textarea, html[data-theme="norton"] .wc-viewer, html[data-theme="norton"] .wc-result-list, html[data-theme="norton"] .wc-context, html[data-theme="norton"] .wc-toast, html[data-theme="norton"] .wc-brand-mark { border-radius: 0; }
+    html[data-theme="norton"] .wc-pane, html[data-theme="norton"] .wc-btn, html[data-theme="norton"] .wc-theme-select, html[data-theme="norton"] .wc-path, html[data-theme="norton"] .wc-filter, html[data-theme="norton"] .wc-dialog, html[data-theme="norton"] .wc-input, html[data-theme="norton"] .wc-select, html[data-theme="norton"] .wc-textarea, html[data-theme="norton"] .wc-viewer, html[data-theme="norton"] .wc-result-list, html[data-theme="norton"] .wc-tree-view, html[data-theme="norton"] .wc-context, html[data-theme="norton"] .wc-toast, html[data-theme="norton"] .wc-brand-mark { border-radius: 0; }
     html[data-theme="norton"] .wc-pane { box-shadow: none; }
     html[data-theme="norton"] .wc-pane.active { box-shadow: 0 0 0 1px var(--wc-line-strong); }
     html[data-theme="norton"] .wc-brand-mark { background: var(--wc-accent); }
@@ -2333,6 +2481,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     <button class="wc-btn" data-action="archive" title="Create archive"><i class="fa-solid fa-file-zipper"></i><span>Archive</span></button>
     <button class="wc-btn" data-action="extract" title="Extract archive"><i class="fa-solid fa-box-open"></i><span>Extract</span></button>
     <button class="wc-btn" data-action="search" title="Find files"><i class="fa-solid fa-magnifying-glass"></i><span>Find</span></button>
+    <button class="wc-btn" data-action="tree" title="Recursive folder tree and sizes"><i class="fa-solid fa-folder-tree"></i><span>Tree</span></button>
     <button class="wc-btn" data-action="compare" title="Compare pane directories"><i class="fa-solid fa-code-compare"></i><span>Compare</span></button>
     <span class="wc-toolbar-sep"></span>
     <button class="wc-btn" data-action="properties" title="Properties"><i class="fa-solid fa-circle-info"></i><span>Properties</span></button>
@@ -3120,6 +3269,43 @@ async function actionSearch() {
   }));
 }
 
+function treeNodeHtml(node, depth = 0) {
+  const children = Array.isArray(node.children) ? node.children : [];
+  const folderLabel = node.folders === 1 ? 'folder' : 'folders';
+  const fileLabel = node.files === 1 ? 'file' : 'files';
+  const classes = ['wc-tree-node'];
+  if (!children.length) classes.push('leaf');
+  if (node.unreadable) classes.push('unreadable');
+  const open = depth < 2 ? ' open' : '';
+  const childrenHtml = children.length ? '<div class="wc-tree-children">' + children.map(child => treeNodeHtml(child, depth + 1)).join('') + '</div>' : '';
+  const unreadable = node.unreadable ? ' · unreadable' : '';
+  return '<details class="' + classes.join(' ') + '"' + open + '><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span><span class="wc-tree-meta">' + formatBytes(node.size) + ' · ' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
+}
+
+async function actionTree() {
+  const pane = activePane();
+  const result = await api('tree', {path:pane.path, hidden:pane.showHidden});
+  const hiddenNote = result.hidden ? 'Hidden items included' : 'Hidden items excluded';
+  const unreadable = result.unreadableCount ? '<div class="alert alert-warning py-2 mb-2">' + Number(result.unreadableCount).toLocaleString() + ' item(s) could not be fully read, so affected totals may be incomplete.</div>' : '';
+  const tools = '<div class="wc-tree-tools"><button class="wc-btn" id="treeExpandAll" type="button"><i class="fa-solid fa-angles-down"></i> Expand all</button><button class="wc-btn" id="treeCollapseAll" type="button"><i class="fa-solid fa-angles-up"></i> Collapse all</button><div class="wc-result-note">' + formatBytes(result.tree.size) + ' · ' + Number(result.folderCount).toLocaleString() + ' folders · ' + Number(result.fileCount).toLocaleString() + ' files · ' + hiddenNote + '</div></div>';
+  const help = '<div class="wc-result-note mb-2">Sizes include each folder’s full visible subtree. Symlinks are not followed. Double-click a folder to open it; Shift + double-click opens it in the other pane.</div>';
+  showContent('Folder tree: ' + fullPathDisplay(result.base), tools + help + unreadable + '<div class="wc-tree-view" id="treeView">' + treeNodeHtml(result.tree) + '</div>');
+
+  const treeView = $('#treeView');
+  $('#treeExpandAll').addEventListener('click', () => $$('details', treeView).forEach(node => { node.open = true; }));
+  $('#treeCollapseAll').addEventListener('click', () => $$('details', treeView).forEach((node, index) => { node.open = index === 0; }));
+  $$('.wc-tree-node > summary[data-tree-path]', treeView).forEach(summary => {
+    summary.addEventListener('dblclick', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const targetPane = event.shiftKey ? otherPane() : pane;
+      const path = summary.dataset.treePath || '';
+      closeDialog();
+      targetPane.load(path);
+    });
+  });
+}
+
 async function actionCompare() {
   const values = await showForm('Compare pane directories', [
     {name:'mode', label:'Comparison mode', type:'select', value:'quick', options:[['quick','Quick (type, size and modified time)'],['checksum','Thorough (SHA-256 content)']]}
@@ -3227,7 +3413,7 @@ async function actionLogout() {
 const actionMap = {
   view:actionView, edit:actionEdit, copy:() => actionTransfer('copy'), move:() => actionTransfer('move'), mkdir:actionMkdir,
   delete:actionDelete, 'new-file':actionNewFile, rename:actionRename, upload:() => actionUpload(false), 'upload-folder':() => actionUpload(true),
-  download:actionDownload, archive:actionArchive, extract:actionExtract, search:actionSearch, compare:actionCompare, properties:actionProperties,
+  download:actionDownload, archive:actionArchive, extract:actionExtract, search:actionSearch, tree:actionTree, compare:actionCompare, properties:actionProperties,
   permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, update:actionUpdate, password:actionPassword, logout:actionLogout
 };
 

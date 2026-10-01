@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.4'); // Increment this for every published update.
+define('MC_VERSION', '1.5'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -17,6 +17,7 @@ define('MC_MAX_TREE_FOLDERS', 10000);
 define('MC_MAX_TREE_DEPTH', 64);
 define('MC_SESSION_TIMEOUT', 1800);
 define('MC_MAX_EDIT_BYTES', 5 * 1024 * 1024);
+define('MC_VIEW_PAGE_BYTES', 100 * 1024);
 define('MC_MAX_SEARCH_RESULTS', 500);
 define('MC_MAX_ARCHIVE_ENTRIES', 10000);
 define('MC_MAX_ARCHIVE_BYTES', 1024 * 1024 * 1024);
@@ -135,10 +136,10 @@ function mc_is_authenticated(): bool {
   return true;
 }
 
-function mc_json(array $payload, int $status = 200): void {
+function mc_json(array $payload, int $status = 200, int $flags = 0): void {
   http_response_code($status);
   header('Content-Type: application/json; charset=utf-8');
-  echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+  echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | $flags);
   exit;
 }
 
@@ -922,6 +923,70 @@ function mc_directory_tree_node(
   return $node;
 }
 
+function mc_read_text_page(string $path, int $page): array {
+  if (!is_file($path) || !is_readable($path)) {
+    throw new RuntimeException('The file is not readable.');
+  }
+  $handle = fopen($path, 'rb');
+  if ($handle === false) {
+    throw new RuntimeException('Cannot open the file.');
+  }
+  try {
+    $stat = fstat($handle);
+    if ($stat === false) {
+      throw new RuntimeException('Cannot determine file size.');
+    }
+    $size = (int)$stat['size'];
+    $pages = max(1, (int)ceil($size / MC_VIEW_PAGE_BYTES));
+    $page = max(1, min($page, $pages));
+    $offset = ($page - 1) * MC_VIEW_PAGE_BYTES;
+
+    $sample = fread($handle, 8192);
+    if ($sample === false) {
+      throw new RuntimeException('Cannot read the file.');
+    }
+    if (strpos($sample, "\0") !== false) {
+      throw new RuntimeException('This appears to be a binary file. Use the preview or download action.');
+    }
+
+    // Read only one page plus enough context to keep UTF-8 characters intact.
+    $readOffset = max(0, $offset - 3);
+    $readLength = min(MC_VIEW_PAGE_BYTES + 6, $size - $readOffset);
+    if (fseek($handle, $readOffset) !== 0) {
+      throw new RuntimeException('Cannot seek to the requested page.');
+    }
+    $raw = $readLength > 0 ? stream_get_contents($handle, $readLength) : '';
+    if ($raw === false || strlen($raw) !== $readLength) {
+      throw new RuntimeException('Cannot read the requested page. The file may have changed; reopen it.');
+    }
+    // Adjacent pages use the same boundary, without splitting a character.
+    $alignBoundary = function (int $position) use ($raw): int {
+      $minimum = max(0, $position - 3);
+      while ($position > $minimum && $position < strlen($raw) && (ord($raw[$position]) & 0xC0) === 0x80) {
+        $position--;
+      }
+      return $position;
+    };
+    $start = $alignBoundary($offset - $readOffset);
+    $end = $alignBoundary(min($size, $offset + MC_VIEW_PAGE_BYTES) - $readOffset);
+    $content = substr($raw, $start, $end - $start);
+    if (strpos(substr($content, 0, 8192), "\0") !== false) {
+      throw new RuntimeException('This appears to be a binary file. Use the preview or download action.');
+    }
+    return [
+      'content' => $content,
+      'size' => $size,
+      'page' => $page,
+      'pages' => $pages,
+      'pageBytes' => MC_VIEW_PAGE_BYTES,
+      'offset' => $readOffset + $start,
+      'endOffset' => $readOffset + $end
+    ];
+  } finally {
+    fclose($handle);
+  }
+}
+
 function mc_stream_file(string $path, bool $download): void {
   if (!is_file($path) || !is_readable($path)) {
     http_response_code(404);
@@ -1584,6 +1649,16 @@ if ($authenticated && $action !== '') {
 
     if ($action === 'list') {
       mc_ok(mc_list_directory((string)($data['path'] ?? '')));
+    }
+
+    if ($action === 'read_text_page') {
+      $rel = mc_normalize_rel((string)($data['path'] ?? ''));
+      $page = filter_var($data['page'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+      if ($page === false) {
+        throw new RuntimeException('Enter a valid page number.');
+      }
+      $result = mc_read_text_page(mc_existing_path($rel), $page);
+      mc_json(array_merge(['success' => true, 'path' => $rel], $result), 200, JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     if ($action === 'read_text') {
@@ -2408,6 +2483,14 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-viewer img, .wc-viewer video { display: block; max-width: 100%; max-height: calc(100vh - 210px); margin: auto; }
     .wc-viewer iframe { display: block; width: 100%; height: calc(100vh - 210px); border: 0; background: white; }
     .wc-viewer audio { width: calc(100% - 30px); margin: 30px 15px; }
+    .wc-view-tools, .wc-view-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+    .wc-view-tools { margin-bottom: 9px; }
+    .wc-view-tools .wc-result-note { flex: 1; min-width: 180px; }
+    .wc-view-tools .wc-btn:disabled { opacity: .5; cursor: default; }
+    .wc-view-pages[hidden] { display: none; }
+    .wc-view-pages label { display: inline-flex; align-items: center; gap: 7px; }
+    .wc-view-page { width: 6.5em; }
+    .wc-text-viewer { max-height: calc(100vh - 260px); }
     .wc-result-list { border: 1px solid var(--wc-line); border-radius: 6px; overflow: auto; max-height: 55vh; }
     .wc-result { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--wc-line); cursor: pointer; }
     .wc-result:last-child { border-bottom: 0; }
@@ -2430,6 +2513,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-tree-bar { height: 9px; overflow: hidden; border: 1px solid var(--wc-line); border-radius: 999px; background: var(--wc-panel-2); }
     .wc-tree-bar > span { display: block; height: 100%; min-width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--wc-accent), var(--wc-folder)); transition: width .16s ease; }
     .wc-tree-percent { color: var(--wc-text); font-size: .85em; text-align: right; white-space: nowrap; }
+    .wc-tree-size { flex: 0 0 90px; color: var(--wc-muted); font-size: .85em; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .wc-tree-node.wc-tree-baseline > summary { background: var(--wc-surface-hover); box-shadow: inset 3px 0 0 var(--wc-accent); }
     .wc-tree-meta { flex: 0 0 265px; color: var(--wc-muted); font-size: .85em; text-align: right; white-space: nowrap; }
     .wc-tree-children { margin-left: 12px; padding-left: 9px; border-left: 1px solid var(--wc-grid); }
@@ -2844,12 +2928,12 @@ class Pane {
     $('.select-all', this.el).addEventListener('change', event => {
       if (event.target.checked) this.visibleItems.forEach(item => this.selected.add(item.path));
       else this.visibleItems.forEach(item => this.selected.delete(item.path));
-      this.renderRowsOnly();
+      this.updateRowSelection();
     });
     $('.select-pattern', this.el).addEventListener('click', () => this.selectPattern());
     $('.invert-selection', this.el).addEventListener('click', () => {
       this.visibleItems.forEach(item => this.selected.has(item.path) ? this.selected.delete(item.path) : this.selected.add(item.path));
-      this.renderRowsOnly();
+      this.updateRowSelection();
     });
     $$('th[data-sort]', this.el).forEach(th => th.addEventListener('click', () => {
       const field = th.dataset.sort;
@@ -2936,6 +3020,17 @@ class Pane {
     });
     this.body.innerHTML = rows.join('');
     $('.wc-empty', this.el).hidden = rows.length !== 0;
+    this.updateRowSelection();
+  }
+
+  updateRowSelection() {
+    // Keep the clicked row in place so native double-click and drag events survive.
+    $$('tr[data-path]', this.body).forEach(row => {
+      const selected = this.selected.has(row.dataset.path);
+      row.classList.toggle('selected', selected);
+      row.classList.toggle('focused', this.focused === row.dataset.path);
+      $('.row-check', row).checked = selected;
+    });
     $('.select-all', this.el).checked = this.visibleItems.length > 0 && this.visibleItems.every(item => this.selected.has(item.path));
     $('.select-all', this.el).indeterminate = this.visibleItems.some(item => this.selected.has(item.path)) && !$('.select-all', this.el).checked;
     this.updateStatus();
@@ -2974,10 +3069,13 @@ class Pane {
       this.anchorIndex = index;
     }
     this.focused = item.path;
-    this.renderRowsOnly();
+    this.updateRowSelection();
   }
 
   handleDoubleClick(event) {
+    if (event.target.closest('.row-check')) return;
+    event.preventDefault();
+    this.activate();
     const row = event.target.closest('tr');
     if (!row) return;
     if (row.dataset.parent) {
@@ -2987,7 +3085,13 @@ class Pane {
     const item = this.rowItem(row);
     if (!item) return;
     if (item.type === 'dir' || item.navigable) this.load(item.path);
-    else runAction('view');
+    else {
+      this.selected.clear();
+      this.selected.add(item.path);
+      this.focused = item.path;
+      this.updateRowSelection();
+      runAction('view');
+    }
   }
 
   handleContext(event) {
@@ -3002,7 +3106,7 @@ class Pane {
       this.selected.add(item.path);
     }
     this.focused = item.path;
-    this.renderRowsOnly();
+    this.updateRowSelection();
     showContext(event.clientX, event.clientY, item.type === 'dir' || item.navigable);
   }
 
@@ -3015,7 +3119,7 @@ class Pane {
       this.selected.clear();
       this.selected.add(item.path);
       this.focused = item.path;
-      this.renderRowsOnly();
+      this.updateRowSelection();
     }
     event.dataTransfer.setData('application/x-webcommander', JSON.stringify({pane:this.id, paths:[...this.selected]}));
     event.dataTransfer.effectAllowed = 'copyMove';
@@ -3079,7 +3183,7 @@ class Pane {
     this.visibleItems.forEach(item => {
       if (regex.test(item.name)) values.mode === 'remove' ? this.selected.delete(item.path) : this.selected.add(item.path);
     });
-    this.renderRowsOnly();
+    this.updateRowSelection();
   }
 
   getSelected(require = true) {
@@ -3163,6 +3267,66 @@ function selectedPaths() {
   return activePane().getSelected().map(item => item.path);
 }
 
+async function showTextView(item) {
+  let result = await api('read_text_page', {path:item.path, page:1});
+  const tools = `<div class="wc-view-tools"><div class="wc-view-pages" id="viewPagination"><button class="wc-btn" id="viewPrevious" type="button"><i class="fa-solid fa-chevron-left"></i> Previous</button><label>Page <input class="wc-input wc-view-page" id="viewPage" type="number" min="1" step="1" required aria-label="Page number"></label><span>of <span id="viewPageCount"></span></span><button class="wc-btn" id="viewGo" type="button">Go</button><button class="wc-btn" id="viewNext" type="button">Next <i class="fa-solid fa-chevron-right"></i></button></div><span class="wc-result-note" id="viewPosition" aria-live="polite"></span><a class="wc-btn primary" href="${escapeHtml(rawUrl(item.path, true))}"><i class="fa-solid fa-download"></i> Download full file</a></div>`;
+  showContent(item.name, tools + '<div class="wc-viewer wc-text-viewer" id="textViewer"><pre id="textViewContent"></pre></div>');
+  const viewer = $('#textViewer');
+  const content = $('#textViewContent');
+  const pagination = $('#viewPagination');
+  const input = $('#viewPage');
+  const count = $('#viewPageCount');
+  const position = $('#viewPosition');
+  const previous = $('#viewPrevious');
+  const next = $('#viewNext');
+  const go = $('#viewGo');
+  let loading = false;
+
+  const updateControls = () => {
+    previous.disabled = loading || result.page <= 1;
+    next.disabled = loading || result.page >= result.pages;
+    input.disabled = go.disabled = loading;
+    viewer.setAttribute('aria-busy', String(loading));
+  };
+  const renderPage = () => {
+    content.textContent = result.content;
+    pagination.hidden = result.pages <= 1;
+    input.value = result.page;
+    input.max = result.pages;
+    count.textContent = Number(result.pages).toLocaleString();
+    position.textContent = result.size ? `Bytes ${(result.offset + 1).toLocaleString()}–${result.endOffset.toLocaleString()} of ${Number(result.size).toLocaleString()} · ${formatBytes(result.pageBytes)} per page` : 'Empty file';
+    viewer.scrollTop = 0;
+    $('#dialogBody').scrollTop = 0;
+    updateControls();
+  };
+  const loadPage = async page => {
+    if (loading || !viewer.isConnected) return;
+    loading = true;
+    updateControls();
+    try {
+      const response = await api('read_text_page', {path:item.path, page});
+      if (!viewer.isConnected) return;
+      result = response;
+      renderPage();
+    } catch (error) {
+      if (viewer.isConnected) toast(error.message, true, 6000);
+    } finally {
+      loading = false;
+      updateControls();
+    }
+  };
+  const goToPage = () => {
+    if (input.reportValidity()) loadPage(Number(input.value));
+  };
+  previous.addEventListener('click', () => loadPage(result.page - 1));
+  next.addEventListener('click', () => loadPage(result.page + 1));
+  go.addEventListener('click', goToPage);
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); goToPage(); }
+  });
+  renderPage();
+}
+
 async function actionView() {
   const item = activePane().getSelected()[0];
   if (item.type === 'dir' || item.navigable) { activePane().load(item.path); return; }
@@ -3175,8 +3339,7 @@ async function actionView() {
     else if (mime.startsWith('audio/')) showContent(item.name, `<div class="wc-viewer"><audio controls autoplay src="${escapeHtml(url)}"></audio></div>`);
     else if (mime.startsWith('video/')) showContent(item.name, `<div class="wc-viewer"><video controls autoplay src="${escapeHtml(url)}"></video></div>`);
     else {
-      const result = await api('read_text', {path:item.path});
-      showContent(item.name, `<div class="wc-viewer"><pre>${escapeHtml(result.content)}</pre></div>`);
+      await showTextView(item);
     }
   } catch (error) {
     const html = `<div class="alert alert-warning mb-3">${escapeHtml(error.message)}</div><a class="wc-btn primary" href="${escapeHtml(rawUrl(item.path, true))}"><i class="fa-solid fa-download"></i> Download file</a>`;
@@ -3382,7 +3545,7 @@ async function actionSearch() {
     if (type === 'dir') pane.load(path);
     else {
       await pane.load(parentPath(path));
-      pane.selected.add(path); pane.focused = path; pane.renderRowsOnly(); pane.activate();
+      pane.selected.add(path); pane.focused = path; pane.updateRowSelection(); pane.activate();
       actionView();
     }
   }));
@@ -3412,7 +3575,7 @@ function treeNodeHtml(node, baselineSize, depth = 0) {
   const childrenHtml = children.length ? '<div class="wc-tree-children">' + children.map(child => treeNodeHtml(child, baselineSize, depth + 1)).join('') + '</div>' : '';
   const unreadable = node.unreadable ? ' · unreadable' : '';
   const usage = '<span class="wc-tree-usage" title="' + escapeHtml(percentText) + ' of the current 100% folder (' + escapeHtml(formatBytes(baselineSize)) + ')"><span class="wc-tree-bar" aria-hidden="true"><span style="width:' + percent.toFixed(3) + '%"></span></span><span class="wc-tree-percent">' + escapeHtml(percentText) + '</span></span>';
-  return '<details class="' + classes.join(' ') + '"' + open + ' data-tree-size="' + size + '"><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span>' + usage + '<span class="wc-tree-meta">' + formatBytes(size) + ' · ' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
+  return '<details class="' + classes.join(' ') + '"' + open + ' data-tree-size="' + size + '"><summary data-tree-path="' + escapeHtml(node.path) + '" title="Double-click to open this folder"><span class="wc-tree-label"><i class="fa-solid fa-folder wc-folder"></i><span class="wc-tree-name">' + escapeHtml(node.name) + '</span></span>' + usage + '<span class="wc-tree-size">' + formatBytes(size) + '</span><span class="wc-tree-meta">' + Number(node.folders).toLocaleString() + ' ' + folderLabel + ' · ' + Number(node.files).toLocaleString() + ' ' + fileLabel + unreadable + '</span></summary>' + childrenHtml + '</details>';
 }
 
 function updateTreeNodePercentage(details, baselineSize, baselineName, isBaseline = false) {
@@ -3672,7 +3835,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Insert' && pane.focused) {
     event.preventDefault();
     pane.selected.has(pane.focused) ? pane.selected.delete(pane.focused) : pane.selected.add(pane.focused);
-    pane.renderRowsOnly();
+    pane.updateRowSelection();
   }
   if (event.key === 'Tab') { event.preventDefault(); otherPane().activate(); }
 }

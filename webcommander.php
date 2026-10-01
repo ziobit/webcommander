@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.6'); // Increment this for every published update.
+define('MC_VERSION', '1.7'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -2466,12 +2466,8 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-brand-mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 8px; background: linear-gradient(135deg, var(--wc-accent), var(--wc-folder)); color: var(--wc-bg); }
     .wc-root { color: var(--wc-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
     .wc-disk { color: var(--wc-muted); white-space: nowrap; }
-    .wc-theme-picker { display: inline-flex; align-items: center; gap: 6px; color: var(--wc-accent); white-space: nowrap; }
-    .wc-theme-select { width: 166px; min-height: 31px; border: 1px solid var(--wc-line); border-radius: 6px; color: var(--wc-text); background: var(--wc-surface); padding: 4px 28px 4px 8px; cursor: pointer; }
-    .wc-theme-select:hover { border-color: var(--wc-line-strong); }
-    .wc-font-select { width: 154px; }
-    .wc-font-size-select { width: 82px; }
-    .wc-theme-select:focus-visible, .wc-btn:focus-visible, .wc-key:focus-visible, .wc-context button:focus-visible, .wc-dialog-close:focus-visible { border-color: var(--wc-line-strong); outline: 2px solid var(--wc-line-strong); outline-offset: 1px; }
+    .wc-topbar #themeButton span { display: inline; }
+    .wc-btn:focus-visible, .wc-key:focus-visible, .wc-context button:focus-visible, .wc-dialog-close:focus-visible { border-color: var(--wc-line-strong); outline: 2px solid var(--wc-line-strong); outline-offset: 1px; }
     .wc-btn { border: 1px solid var(--wc-line); border-radius: 6px; color: var(--wc-text); background: var(--wc-panel-2); min-height: 31px; padding: 5px 9px; display: inline-flex; gap: 6px; align-items: center; justify-content: center; cursor: pointer; }
     .wc-btn:hover, .wc-btn:focus { background: var(--wc-surface-hover); border-color: var(--wc-line-strong); color: var(--wc-text); outline: none; }
     .wc-btn.primary { color: var(--wc-selected-text); background: var(--wc-selected); border-color: var(--wc-line-strong); }
@@ -2481,8 +2477,15 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-toolbar { display: flex; gap: 4px; align-items: center; padding: 5px 8px; overflow-x: auto; background: var(--wc-panel-2); border-bottom: 1px solid var(--wc-line); scrollbar-width: thin; scrollbar-color: var(--wc-line) var(--wc-surface); }
     .wc-toolbar .wc-btn { white-space: nowrap; }
     .wc-toolbar-sep { width: 1px; height: 24px; background: var(--wc-line); margin: 0 3px; flex: 0 0 auto; }
-    .wc-panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 0; gap: 5px; padding: 5px; }
-    .wc-pane { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: var(--wc-panel); border: 1px solid var(--wc-line); border-radius: 7px; min-width: 0; overflow: hidden; box-shadow: 0 8px 24px var(--wc-shadow); }
+    .wc-panes { display: grid; grid-template-columns: minmax(0, var(--wc-pane-first, 1fr)) 9px minmax(0, var(--wc-pane-second, 1fr)); min-height: 0; padding: 5px; }
+    .wc-pane-separator { position: relative; min-height: 0; cursor: col-resize; touch-action: none; }
+    .wc-pane-separator::before { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--wc-line); }
+    .wc-pane-separator::after { content: ''; position: absolute; top: calc(50% - 12px); left: 2px; width: 5px; height: 24px; border-inline: 1px solid var(--wc-line-strong); }
+    .wc-pane-separator:hover::before, .wc-pane-separator:focus-visible::before { background: var(--wc-line-strong); }
+    .wc-pane-separator:focus-visible { outline: 1px solid var(--wc-line-strong); outline-offset: -1px; }
+    body.wc-pane-resizing, body.wc-pane-resizing * { cursor: col-resize !important; user-select: none !important; }
+    body.wc-pane-resizing-horizontal, body.wc-pane-resizing-horizontal * { cursor: row-resize !important; }
+    .wc-pane { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: var(--wc-panel); border: 1px solid var(--wc-line); border-radius: 7px; min-width: 0; min-height: 0; overflow: hidden; box-shadow: 0 8px 24px var(--wc-shadow); }
     .wc-pane.active { border-color: var(--wc-line-strong); box-shadow: 0 0 0 1px var(--wc-line-strong), 0 8px 28px var(--wc-shadow); }
     .wc-pane-head { display: flex; align-items: center; gap: 5px; padding: 6px; border-bottom: 1px solid var(--wc-line); background: var(--wc-panel-2); }
     .wc-pane-head .wc-btn { min-width: 31px; padding: 4px 7px; }
@@ -2606,13 +2609,16 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-toast { max-width: min(430px, calc(100vw - 24px)); padding: 10px 12px; background: var(--wc-panel-2); border: 1px solid var(--wc-line-strong); border-radius: 7px; color: var(--wc-text); box-shadow: 0 10px 30px var(--wc-shadow); animation: wc-in .15s ease-out; }
     .wc-toast.error { color: var(--wc-danger); background: var(--wc-danger-bg); border-color: var(--wc-danger); }
     html[data-theme="norton"] body { font-family: var(--wc-font); }
-    html[data-theme="norton"] .wc-pane, html[data-theme="norton"] .wc-btn, html[data-theme="norton"] .wc-theme-select, html[data-theme="norton"] .wc-path, html[data-theme="norton"] .wc-filter, html[data-theme="norton"] .wc-dialog, html[data-theme="norton"] .wc-input, html[data-theme="norton"] .wc-select, html[data-theme="norton"] .wc-textarea, html[data-theme="norton"] .wc-viewer, html[data-theme="norton"] .wc-result-list, html[data-theme="norton"] .wc-tree-view, html[data-theme="norton"] .wc-context, html[data-theme="norton"] .wc-toast, html[data-theme="norton"] .wc-brand-mark { border-radius: 0; }
+    html[data-theme="norton"] .wc-pane, html[data-theme="norton"] .wc-btn, html[data-theme="norton"] .wc-path, html[data-theme="norton"] .wc-filter, html[data-theme="norton"] .wc-dialog, html[data-theme="norton"] .wc-input, html[data-theme="norton"] .wc-select, html[data-theme="norton"] .wc-textarea, html[data-theme="norton"] .wc-viewer, html[data-theme="norton"] .wc-result-list, html[data-theme="norton"] .wc-tree-view, html[data-theme="norton"] .wc-context, html[data-theme="norton"] .wc-toast, html[data-theme="norton"] .wc-brand-mark { border-radius: 0; }
     html[data-theme="norton"] .wc-pane { box-shadow: none; }
     html[data-theme="norton"] .wc-pane.active { box-shadow: 0 0 0 1px var(--wc-line-strong); }
     html[data-theme="norton"] .wc-brand-mark { background: var(--wc-accent); }
     @keyframes wc-in { from { opacity: 0; transform: translateY(-5px); } }
     @media (max-width: 900px) {
-      .wc-panes { grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) minmax(0,1fr); }
+      .wc-panes { grid-template-columns: 1fr; grid-template-rows: minmax(0, var(--wc-pane-first, 1fr)) 9px minmax(0, var(--wc-pane-second, 1fr)); }
+      .wc-pane-separator { cursor: row-resize; }
+      .wc-pane-separator::before { top: 4px; bottom: auto; left: 0; right: 0; width: auto; height: 1px; }
+      .wc-pane-separator::after { top: 2px; left: calc(50% - 12px); width: 24px; height: 5px; border-inline: 0; border-block: 1px solid var(--wc-line-strong); }
       .wc-table th.perms, .wc-table td.perms { display: none; }
       .wc-disk, .wc-root { display: none; }
       .wc-keys { grid-template-columns: repeat(4, minmax(0,1fr)); }
@@ -2621,24 +2627,17 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       .wc-topbar { gap: 6px; padding-inline: 7px; }
       .wc-brand > span:last-child, .wc-topbar .wc-btn span { display: none; }
       .wc-topbar .wc-version span { display: inline; }
-      .wc-theme-select { width: 145px; }
-      .wc-font-size-select { width: 78px; }
     }
     @media (max-width: 560px) {
       .wc-table th.date, .wc-table td.date { display: none; }
       .wc-table th.size { width: 78px; }
       .wc-toolbar .wc-btn span { display: none; }
       .wc-toolbar .wc-btn { min-width: 33px; }
-      .wc-theme-picker > i { display: none; }
-      .wc-theme-select { width: 124px; }
-      .wc-font-size-select { width: 72px; }
     }
     @media (max-width: 440px) {
       .wc-topbar { gap: 4px; padding-inline: 5px; }
       .wc-brand { display: none; }
       .wc-topbar .wc-version span { display: none; }
-      .wc-theme-select { width: 78px; padding-inline: 5px 20px; }
-      .wc-font-size-select { width: 62px; }
     }
   </style>
 </head>
@@ -2648,64 +2647,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     <div class="wc-brand"><span class="wc-brand-mark"><i class="fa-solid fa-table-columns"></i></span><span>WebCommander</span></div>
     <div class="wc-root" title="<?= mc_h(MC_ROOT_REAL) ?>"><i class="fa-solid fa-shield-halved me-1"></i><?= mc_h(MC_ROOT_REAL) ?></div>
     <div class="wc-disk" id="diskInfo"></div>
-    <label class="wc-theme-picker" title="Color theme">
-      <i class="fa-solid fa-palette" aria-hidden="true"></i>
-      <span class="visually-hidden">Color theme</span>
-      <select class="wc-theme-select" id="themeSelect" aria-label="Color theme">
-        <option value="norton">Norton Commander</option>
-        <option value="midnight">Midnight Blue</option>
-        <option value="solarized-dark">Solarized Dark</option>
-        <option value="solarized-light">Solarized Light</option>
-        <option value="nord">Nord</option>
-        <option value="gruvbox">Gruvbox Dark</option>
-        <option value="dracula">Dracula</option>
-        <option value="monokai">Monokai</option>
-        <option value="forest">Forest</option>
-        <option value="paper">Paper Light</option>
-        <option value="amber">Amber Terminal</option>
-      </select>
-    </label>
-    <label class="wc-theme-picker" title="Fixed-width interface font">
-      <i class="fa-solid fa-font" aria-hidden="true"></i>
-      <span class="visually-hidden">Interface font</span>
-      <select class="wc-theme-select wc-font-select" id="fontSelect" aria-label="Fixed-width interface font">
-        <option value="lucida">Lucida Console</option>
-        <option value="consolas">Consolas</option>
-        <option value="cascadia">Cascadia Mono</option>
-        <option value="jetbrains">JetBrains Mono</option>
-        <option value="fira">Fira Code</option>
-        <option value="source-code">Source Code Pro</option>
-        <option value="ibm-plex">IBM Plex Mono</option>
-        <option value="roboto">Roboto Mono</option>
-        <option value="ubuntu">Ubuntu Mono</option>
-        <option value="courier">Courier New</option>
-      </select>
-    </label>
-    <label class="wc-theme-picker" title="Interface font size">
-      <i class="fa-solid fa-text-height" aria-hidden="true"></i>
-      <span class="visually-hidden">Interface font size</span>
-      <select class="wc-theme-select wc-font-size-select" id="fontSizeSelect" aria-label="Interface font size">
-        <option value="6">6 px</option>
-        <option value="7">7 px</option>
-        <option value="8">8 px</option>
-        <option value="9">9 px</option>
-        <option value="10">10 px</option>
-        <option value="11">11 px</option>
-        <option value="12">12 px</option>
-        <option value="13" selected>13 px</option>
-        <option value="14">14 px</option>
-        <option value="15">15 px</option>
-        <option value="16">16 px</option>
-        <option value="17">17 px</option>
-        <option value="18">18 px</option>
-        <option value="19">19 px</option>
-        <option value="20">20 px</option>
-        <option value="21">21 px</option>
-        <option value="22">22 px</option>
-        <option value="23">23 px</option>
-        <option value="24">24 px</option>
-      </select>
-    </label>
+    <button class="wc-btn" id="themeButton" data-action="theme" title="Font, font size and color scheme" aria-haspopup="dialog" aria-controls="mainDialog"><i class="fa-solid fa-palette" aria-hidden="true"></i><span>Theme</span></button>
     <button class="wc-btn wc-version" id="versionButton" data-action="update" title="Version <?= mc_h(MC_VERSION) ?> — check for updates" aria-label="WebCommander version <?= mc_h(MC_VERSION) ?>. Check for updates"><i class="fa-solid fa-cloud-arrow-down"></i><span>v<?= mc_h(MC_VERSION) ?></span></button>
     <button class="wc-btn" data-action="password" title="Change password"><i class="fa-solid fa-key"></i><span>Password</span></button>
     <button class="wc-btn" data-action="logout" title="Sign out"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></button>
@@ -2739,7 +2681,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     <button class="wc-btn" data-action="refresh" title="Refresh both panes"><i class="fa-solid fa-rotate"></i><span>Refresh</span></button>
   </nav>
 
-  <main class="wc-panes">
+  <main class="wc-panes" id="panes">
     <?php foreach (['left', 'right'] as $paneId): ?>
     <section class="wc-pane<?= $paneId === 'left' ? ' active' : '' ?>" id="pane-<?= $paneId ?>" data-pane="<?= $paneId ?>">
       <div class="wc-pane-head">
@@ -2764,6 +2706,9 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       </div>
       <div class="wc-pane-status"><span class="pane-count">Loading…</span><span class="pane-selection"></span></div>
     </section>
+    <?php if ($paneId === 'left'): ?>
+    <div class="wc-pane-separator" id="paneSeparator" role="separator" tabindex="0" aria-label="Resize file panes" aria-controls="pane-left pane-right" aria-orientation="vertical" aria-valuemin="15" aria-valuemax="85" aria-valuenow="50" title="Drag to resize panes; double-click to restore equal panes"></div>
+    <?php endif; ?>
     <?php endforeach; ?>
   </main>
 
@@ -2890,16 +2835,34 @@ function toast(message, error = false, timeout = 3500) {
   setTimeout(() => node.remove(), timeout);
 }
 
-const THEME_IDS = new Set(['norton', 'midnight', 'solarized-dark', 'solarized-light', 'nord', 'gruvbox', 'dracula', 'monokai', 'forest', 'paper', 'amber']);
-const FONT_IDS = new Set(['lucida', 'consolas', 'cascadia', 'jetbrains', 'fira', 'source-code', 'ibm-plex', 'roboto', 'ubuntu', 'courier']);
+const THEME_OPTIONS = [
+  ['norton', 'Norton Commander'], ['midnight', 'Midnight Blue'], ['solarized-dark', 'Solarized Dark'],
+  ['solarized-light', 'Solarized Light'], ['nord', 'Nord'], ['gruvbox', 'Gruvbox Dark'],
+  ['dracula', 'Dracula'], ['monokai', 'Monokai'], ['forest', 'Forest'], ['paper', 'Paper Light'], ['amber', 'Amber Terminal']
+];
+const FONT_OPTIONS = [
+  ['lucida', 'Lucida Console'], ['consolas', 'Consolas'], ['cascadia', 'Cascadia Mono'],
+  ['jetbrains', 'JetBrains Mono'], ['fira', 'Fira Code'], ['source-code', 'Source Code Pro'],
+  ['ibm-plex', 'IBM Plex Mono'], ['roboto', 'Roboto Mono'], ['ubuntu', 'Ubuntu Mono'], ['courier', 'Courier New']
+];
+const THEME_IDS = new Set(THEME_OPTIONS.map(option => option[0]));
+const FONT_IDS = new Set(FONT_OPTIONS.map(option => option[0]));
 const PANE_COLUMNS = [
   {id:'select', label:'Selection', min:28}, {id:'name', label:'Name', min:80},
   {id:'size', label:'Size', min:45}, {id:'date', label:'Modified', min:65}, {id:'mode', label:'Mode', min:40}
 ];
 
-function columnProfileKey() {
+function fontProfileKey() {
   const root = document.documentElement;
-  return `webcommander-columns-v1:${root.dataset.font}:${root.dataset.fontSize}`;
+  return `${root.dataset.font}:${root.dataset.fontSize}`;
+}
+
+function columnProfileKey() {
+  return `webcommander-columns-v1:${fontProfileKey()}`;
+}
+
+function paneSplitProfileKey() {
+  return `webcommander-split-v1:${fontProfileKey()}`;
 }
 
 function refreshPaneColumns(restore = false) {
@@ -2910,53 +2873,150 @@ function refreshPaneColumns(restore = false) {
   });
 }
 
-function applyTheme(theme, remember = true) {
-  const nextTheme = THEME_IDS.has(theme) ? theme : 'norton';
-  document.documentElement.dataset.theme = nextTheme;
-  $('#themeSelect').value = nextTheme;
+let paneSplit = {vertical:.5, horizontal:.5};
+
+function paneSplitLayout() {
+  const panes = $('#panes');
+  const separator = $('#paneSeparator');
+  const horizontal = window.matchMedia('(max-width: 900px)').matches;
+  const style = getComputedStyle(panes);
+  const padding = horizontal ? parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) : parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  const available = Math.max(0, (horizontal ? panes.clientHeight - separator.offsetHeight : panes.clientWidth - separator.offsetWidth) - padding);
+  const min = available > 0 ? Math.max(.15, Math.min(.45, (horizontal ? 140 : 200) / available)) : .15;
+  return {orientation:horizontal ? 'horizontal' : 'vertical', available, min, max:1 - min};
+}
+
+function applyPaneSplit() {
+  const layout = paneSplitLayout();
+  const ratio = Math.max(layout.min, Math.min(layout.max, paneSplit[layout.orientation]));
+  const panes = $('#panes');
+  panes.style.setProperty('--wc-pane-first', ratio + 'fr');
+  panes.style.setProperty('--wc-pane-second', (1 - ratio) + 'fr');
+  const separator = $('#paneSeparator');
+  const percent = Math.round(ratio * 100);
+  separator.setAttribute('aria-orientation', layout.orientation);
+  separator.setAttribute('aria-valuemin', Math.round(layout.min * 100));
+  separator.setAttribute('aria-valuemax', Math.round(layout.max * 100));
+  separator.setAttribute('aria-valuenow', percent);
+  separator.setAttribute('aria-valuetext', (layout.orientation === 'horizontal' ? 'Top' : 'Left') + ' pane ' + percent + '%');
+  separator.title = `Drag to resize panes (${percent}% / ${100 - percent}%); double-click or Enter for equal panes. Arrow keys resize; Shift makes larger steps.`;
+  return {...layout, ratio};
+}
+
+function restorePaneSplit() {
+  paneSplit = {vertical:.5, horizontal:.5};
+  try {
+    const saved = JSON.parse(localStorage.getItem(paneSplitProfileKey()) || '{}');
+    for (const orientation of ['vertical', 'horizontal']) {
+      if (Number.isFinite(saved[orientation]) && saved[orientation] >= .15 && saved[orientation] <= .85) paneSplit[orientation] = saved[orientation];
+    }
+  } catch (error) {}
+  applyPaneSplit();
+}
+
+function changePaneSplit(ratio, remember = true) {
+  const layout = paneSplitLayout();
+  paneSplit[layout.orientation] = Math.max(layout.min, Math.min(layout.max, ratio));
+  applyPaneSplit();
+  refreshPaneColumns();
   if (remember) {
-    try { localStorage.setItem('webcommander-theme', nextTheme); } catch (error) {}
+    try { localStorage.setItem(paneSplitProfileKey(), JSON.stringify(paneSplit)); } catch (error) {}
   }
 }
 
-function applyFont(font, remember = true) {
-  const nextFont = FONT_IDS.has(font) ? font : 'lucida';
-  document.documentElement.dataset.font = nextFont;
-  $('#fontSelect').value = nextFont;
-  if (remember) {
-    try { localStorage.setItem('webcommander-font', nextFont); } catch (error) {}
-  }
-  refreshPaneColumns(true);
+function bindPaneSeparator() {
+  const separator = $('#paneSeparator');
+  separator.addEventListener('dblclick', event => { event.preventDefault(); changePaneSplit(.5); });
+  separator.addEventListener('keydown', event => {
+    if (event.key === 'Tab') { event.stopPropagation(); return; }
+    const layout = applyPaneSplit();
+    const backward = layout.orientation === 'horizontal' ? 'ArrowUp' : 'ArrowLeft';
+    const forward = layout.orientation === 'horizontal' ? 'ArrowDown' : 'ArrowRight';
+    if (![backward, forward, 'Home', 'End', 'Enter'].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    const step = event.shiftKey ? .05 : .01;
+    const ratio = event.key === 'Enter' ? .5 : event.key === 'Home' ? layout.min : event.key === 'End' ? layout.max : layout.ratio + (event.key === forward ? step : -step);
+    changePaneSplit(ratio);
+  });
+  separator.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const layout = applyPaneSplit();
+    if (layout.available <= 0) return;
+    const horizontal = layout.orientation === 'horizontal';
+    const initial = horizontal ? event.clientY : event.clientX;
+    const pointerId = event.pointerId;
+    document.body.classList.add('wc-pane-resizing');
+    document.body.classList.toggle('wc-pane-resizing-horizontal', horizontal);
+    const move = pointer => {
+      if (pointer.pointerId !== pointerId) return;
+      const delta = (horizontal ? pointer.clientY : pointer.clientX) - initial;
+      changePaneSplit(layout.ratio + delta / layout.available, false);
+    };
+    const finish = pointer => {
+      if (pointer.pointerId !== undefined && pointer.pointerId !== pointerId) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      separator.removeEventListener('lostpointercapture', finish);
+      window.removeEventListener('blur', finish);
+      document.body.classList.remove('wc-pane-resizing', 'wc-pane-resizing-horizontal');
+      try { if (separator.hasPointerCapture(pointerId)) separator.releasePointerCapture(pointerId); } catch (error) {}
+      changePaneSplit(paneSplit[paneSplitLayout().orientation]);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+    separator.addEventListener('lostpointercapture', finish);
+    window.addEventListener('blur', finish);
+    try { separator.setPointerCapture(pointerId); } catch (error) {}
+  });
 }
 
-function applyFontSize(value, remember = true) {
-  const parsed = Number.parseInt(String(value), 10);
+function appearanceSettings() {
+  const root = document.documentElement;
+  return {theme:root.dataset.theme, font:root.dataset.font, fontSize:Number(root.dataset.fontSize)};
+}
+
+function applyAppearance(settings, remember = true) {
+  const nextTheme = THEME_IDS.has(settings.theme) ? settings.theme : 'norton';
+  const nextFont = FONT_IDS.has(settings.font) ? settings.font : 'lucida';
+  const parsed = Number.parseInt(String(settings.fontSize), 10);
   const nextSize = Number.isInteger(parsed) && parsed >= 6 && parsed <= 24 ? parsed : 13;
-  document.documentElement.dataset.fontSize = String(nextSize);
-  document.documentElement.style.setProperty('--wc-font-size', nextSize + 'px');
-  $('#fontSizeSelect').value = String(nextSize);
+  const root = document.documentElement;
+  const changedProfile = root.dataset.font !== nextFont || root.dataset.fontSize !== String(nextSize);
+  root.dataset.theme = nextTheme;
+  root.dataset.font = nextFont;
+  root.dataset.fontSize = String(nextSize);
+  root.style.setProperty('--wc-font-size', nextSize + 'px');
+  [['themeSelect', nextTheme], ['fontSelect', nextFont], ['fontSizeSelect', String(nextSize)]].forEach(([id, value]) => {
+    const select = $('#' + id);
+    if (select) select.value = value;
+  });
+  const themeName = THEME_OPTIONS.find(option => option[0] === nextTheme)[1];
+  const fontName = FONT_OPTIONS.find(option => option[0] === nextFont)[1];
+  $('#themeButton').title = `${themeName} · ${fontName} · ${nextSize} px`;
   if (remember) {
-    try { localStorage.setItem('webcommander-font-size', String(nextSize)); } catch (error) {}
+    try {
+      localStorage.setItem('webcommander-theme', nextTheme);
+      localStorage.setItem('webcommander-font', nextFont);
+      localStorage.setItem('webcommander-font-size', String(nextSize));
+    } catch (error) {}
   }
-  refreshPaneColumns(true);
+  if (changedProfile) {
+    restorePaneSplit();
+    refreshPaneColumns(true);
+  }
 }
 
-applyTheme(document.documentElement.dataset.theme, false);
-applyFont(document.documentElement.dataset.font, false);
-applyFontSize(document.documentElement.dataset.fontSize, false);
-$('#themeSelect').addEventListener('change', event => {
-  applyTheme(event.target.value);
-  toast(`Theme: ${event.target.selectedOptions[0].textContent}`);
-});
-$('#fontSelect').addEventListener('change', event => {
-  applyFont(event.target.value);
-  toast(`Font: ${event.target.selectedOptions[0].textContent}`);
-});
-$('#fontSizeSelect').addEventListener('change', event => {
-  applyFontSize(event.target.value);
-  toast(`Font size: ${event.target.value}px`);
-});
-window.addEventListener('resize', () => refreshPaneColumns());
+function applyTheme(theme, remember = true) { applyAppearance({...appearanceSettings(), theme}, remember); }
+function applyFont(font, remember = true) { applyAppearance({...appearanceSettings(), font}, remember); }
+function applyFontSize(fontSize, remember = true) { applyAppearance({...appearanceSettings(), fontSize}, remember); }
+
+applyAppearance(appearanceSettings(), false);
+restorePaneSplit();
+bindPaneSeparator();
+window.addEventListener('resize', () => { applyPaneSplit(); refreshPaneColumns(); });
 if (document.fonts) {
   document.fonts.ready.then(() => refreshPaneColumns());
   document.fonts.addEventListener('loadingdone', () => refreshPaneColumns());
@@ -3228,7 +3288,7 @@ class Pane {
   async editColumns() {
     this.activate();
     const label = this.id === 'left' ? 'Left' : 'Right';
-    const profile = $('#fontSelect').selectedOptions[0].textContent + ' · ' + document.documentElement.dataset.fontSize + ' px';
+    const profile = FONT_OPTIONS.find(option => option[0] === document.documentElement.dataset.font)[1] + ' · ' + document.documentElement.dataset.fontSize + ' px';
     const pending = showForm(`${label} pane column widths`, [
       {type:'html', html:`<div class="wc-result-note mb-2">Saved separately for this pane and ${escapeHtml(profile)}. You can also drag any header edge or double-click it to fit a column.</div><button class="wc-btn" type="button" id="columnsAutoFit"><i class="fa-solid fa-arrows-left-right-to-line"></i> Fit to pane</button>`},
       ...PANE_COLUMNS.map((column, index) => ({name:column.id, label:column.label + ' (px)', type:'number', value:this.columnWidths[index], min:column.min, max:5000, step:1, required:true}))
@@ -3541,6 +3601,27 @@ $('#dialogForm').addEventListener('submit', event => {
 });
 $$('[data-dialog-close]').forEach(button => button.addEventListener('click', () => closeDialog(null)));
 dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(null); });
+
+async function actionTheme() {
+  const initial = appearanceSettings();
+  const pending = showForm('Theme', [
+    {name:'theme', label:'Color scheme', type:'select', value:initial.theme, options:THEME_OPTIONS},
+    {name:'font', label:'Font', type:'select', value:initial.font, options:FONT_OPTIONS},
+    {name:'font_size', label:'Font size', type:'select', value:initial.fontSize, options:Array.from({length:19}, (_, index) => [index + 6, (index + 6) + ' px'])},
+    {type:'html', html:'<div class="wc-result-note">Changes are previewed immediately. Apply saves your choices; Cancel restores the previous appearance. Pane positions and column widths are remembered separately for each font and size.</div>'}
+  ], {submitLabel:'Apply'});
+  const body = $('#dialogBody');
+  [['theme', 'themeSelect'], ['font', 'fontSelect'], ['font_size', 'fontSizeSelect']].forEach(([name, id]) => {
+    const select = $(`[name="${name}"]`, body);
+    select.id = id;
+    select.closest('.wc-field').querySelector('label').htmlFor = id;
+    select.addEventListener('change', () => applyAppearance({
+      theme:$('#themeSelect').value, font:$('#fontSelect').value, fontSize:$('#fontSizeSelect').value
+    }, false));
+  });
+  const values = await pending;
+  applyAppearance(values ? {theme:values.theme, font:values.font, fontSize:values.font_size} : initial, !!values);
+}
 
 function collisionField() {
   return {name:'collision', label:'If destination exists', type:'select', value:'rename', options:[['rename','Keep both (automatic new name)'],['overwrite','Overwrite'],['skip','Skip']]};
@@ -4169,7 +4250,7 @@ const actionMap = {
   view:actionView, edit:actionEdit, copy:() => actionTransfer('copy'), move:() => actionTransfer('move'), mkdir:actionMkdir,
   delete:actionDelete, 'new-file':actionNewFile, rename:actionRename, upload:() => actionUpload(false), 'upload-folder':() => actionUpload(true),
   download:actionDownload, archive:actionArchive, extract:actionExtract, search:actionSearch, tree:actionTree, 'tree-selected':actionTreeSelected, compare:actionCompare, properties:actionProperties,
-  permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, update:actionUpdate, password:actionPassword, logout:actionLogout
+  permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, update:actionUpdate, theme:actionTheme, password:actionPassword, logout:actionLogout
 };
 
 async function runAction(name) {

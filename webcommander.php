@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.5'); // Increment this for every published update.
+define('MC_VERSION', '1.6'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -517,6 +517,31 @@ function mc_group_name(int $gid): string {
     }
   }
   return (string)$gid;
+}
+
+function mc_system_accounts(string $file): array {
+  $accounts = [];
+  $lines = is_readable($file) ? @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : false;
+  foreach ($lines === false ? [] : $lines as $line) {
+    $parts = explode(':', $line);
+    if (count($parts) >= 3 && $parts[0] !== '' && preg_match('/^\d+$/', $parts[2])) {
+      $accounts[] = ['name' => $parts[0], 'id' => (int)$parts[2]];
+    }
+  }
+  usort($accounts, function (array $a, array $b): int { return strnatcasecmp($a['name'], $b['name']); });
+  return $accounts;
+}
+
+function mc_ownership_value(string $value) {
+  if (!preg_match('/^\d+$/', $value)) {
+    return $value;
+  }
+  $number = ltrim($value, '0');
+  $id = filter_var($number === '' ? '0' : $number, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+  if ($id === false) {
+    throw new RuntimeException('The numeric owner/group ID is invalid or too large.');
+  }
+  return $id;
 }
 
 function mc_mime(string $path): string {
@@ -1764,12 +1789,31 @@ if ($authenticated && $action !== '') {
       mc_ok(['results' => mc_transfer($paths, (string)($data['destination'] ?? ''), $operation, $collision)]);
     }
 
+    if ($action === 'permission_info') {
+      $paths = is_array($data['paths'] ?? null) ? $data['paths'] : [];
+      if (!$paths) {
+        throw new RuntimeException('Select at least one item.');
+      }
+      $details = [];
+      foreach ($paths as $rel) {
+        $path = mc_existing_path((string)$rel, false);
+        $details[] = mc_item_info($path, basename($path));
+      }
+      mc_ok(['details' => $details, 'users' => mc_system_accounts('/etc/passwd'), 'groups' => mc_system_accounts('/etc/group')]);
+    }
+
     if ($action === 'chmod_chown') {
       $paths = is_array($data['paths'] ?? null) ? $data['paths'] : [];
-      $modeText = preg_replace('/[^0-7]/', '', (string)($data['mode'] ?? ''));
-      $owner = trim((string)($data['owner'] ?? ''));
-      $group = trim((string)($data['group'] ?? ''));
+      $modeText = trim((string)($data['mode'] ?? ''));
+      if ($modeText !== '' && !preg_match('/^[0-7]{3,4}$/', $modeText)) {
+        throw new RuntimeException('Permissions must contain three or four octal digits (0–7).');
+      }
+      $owner = mc_ownership_value(trim((string)($data['owner'] ?? '')));
+      $group = mc_ownership_value(trim((string)($data['group'] ?? '')));
       $recursive = !empty($data['recursive']);
+      if (!$paths) {
+        throw new RuntimeException('Select at least one item.');
+      }
       if ($modeText === '' && $owner === '' && $group === '') {
         throw new RuntimeException('Enter permissions, an owner, or a group.');
       }
@@ -1781,14 +1825,23 @@ if ($authenticated && $action !== '') {
           throw new RuntimeException('Protected application files cannot be changed.');
         }
         $count += mc_apply_recursive($path, $recursive, function (string $node) use ($mode, $owner, $group): void {
+          if ($owner !== '') {
+            $changeOwner = is_link($node) ? 'lchown' : 'chown';
+            if (!function_exists($changeOwner)) {
+              throw new RuntimeException('Changing ownership is not supported for this item.');
+            }
+            mc_fs('Cannot change owner for ' . basename($node), function () use ($node, $owner, $changeOwner) { return $changeOwner($node, $owner); });
+          }
+          if ($group !== '') {
+            $changeGroup = is_link($node) ? 'lchgrp' : 'chgrp';
+            if (!function_exists($changeGroup)) {
+              throw new RuntimeException('Changing groups is not supported for this item.');
+            }
+            mc_fs('Cannot change group for ' . basename($node), function () use ($node, $group, $changeGroup) { return $changeGroup($node, $group); });
+          }
+          // Apply the requested mode last: changing ownership can clear special bits.
           if ($mode !== null && !is_link($node)) {
             mc_fs('Cannot change permissions for ' . basename($node), function () use ($node, $mode) { return chmod($node, $mode); });
-          }
-          if ($owner !== '' && function_exists('chown')) {
-            mc_fs('Cannot change owner for ' . basename($node), function () use ($node, $owner) { return chown($node, $owner); });
-          }
-          if ($group !== '' && function_exists('chgrp')) {
-            mc_fs('Cannot change group for ' . basename($node), function () use ($node, $group) { return chgrp($node, $group); });
           }
         });
       }
@@ -2094,6 +2147,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     :root {
       --wc-font: "Lucida Console", "Lucida Sans Typewriter", "Courier New", monospace;
       --wc-font-size: 13px;
+      --wc-archive: #9ab4bd;
     }
     html[data-font="lucida"] { --wc-font: "Lucida Console", "Lucida Sans Typewriter", "Courier New", monospace; }
     html[data-font="consolas"] { --wc-font: Consolas, "Cascadia Mono", "Courier New", monospace; }
@@ -2152,6 +2206,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #72c9ff;
       --wc-link: #c39af7;
       --wc-file: #c6d4e2;
+      --wc-archive: #8295aa;
       --wc-success: #71deb5;
       --wc-warning: #f2c878;
       --wc-overlay: rgba(0, 6, 14, .75);
@@ -2178,6 +2233,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #e4b93d;
       --wc-link: #eb76ae;
       --wc-file: #d7d4c8;
+      --wc-archive: #8d9b98;
       --wc-success: #a8b932;
       --wc-warning: #e7a93b;
       --wc-overlay: rgba(0, 20, 25, .78);
@@ -2204,6 +2260,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #856100;
       --wc-link: #7c3c8f;
       --wc-file: #334f54;
+      --wc-archive: #6b777a;
       --wc-success: #567000;
       --wc-warning: #8a5f00;
       --wc-overlay: rgba(25, 35, 37, .38);
@@ -2230,6 +2287,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #ebcb8b;
       --wc-link: #c3a2c7;
       --wc-file: #d8dee9;
+      --wc-archive: #929cac;
       --wc-success: #a3be8c;
       --wc-warning: #e2a277;
       --wc-overlay: rgba(21, 25, 32, .76);
@@ -2256,6 +2314,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #fabd2f;
       --wc-link: #d99ab3;
       --wc-file: #d5c4a1;
+      --wc-archive: #a5997b;
       --wc-success: #b8bb26;
       --wc-warning: #fe9f38;
       --wc-overlay: rgba(20, 18, 17, .78);
@@ -2282,6 +2341,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #f1fa8c;
       --wc-link: #c7a4ff;
       --wc-file: #e5e5df;
+      --wc-archive: #a29eae;
       --wc-success: #6df591;
       --wc-warning: #ffbd7a;
       --wc-overlay: rgba(15, 16, 23, .78);
@@ -2308,6 +2368,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #e6db74;
       --wc-link: #bc9aff;
       --wc-file: #e3e3dc;
+      --wc-archive: #9f9f91;
       --wc-success: #a6e22e;
       --wc-warning: #fda43c;
       --wc-overlay: rgba(16, 17, 14, .8);
@@ -2334,6 +2395,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #e7d27c;
       --wc-link: #c2abea;
       --wc-file: #d8e9e0;
+      --wc-archive: #90aa9a;
       --wc-success: #8fd694;
       --wc-warning: #f0ba6c;
       --wc-overlay: rgba(4, 20, 14, .78);
@@ -2360,6 +2422,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #805500;
       --wc-link: #6d3f91;
       --wc-file: #3d4852;
+      --wc-archive: #727c86;
       --wc-success: #24734a;
       --wc-warning: #815600;
       --wc-overlay: rgba(24, 30, 36, .4);
@@ -2386,6 +2449,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
       --wc-folder: #ffd166;
       --wc-link: #ffad5a;
       --wc-file: #ffe7a3;
+      --wc-archive: #bfa15d;
       --wc-success: #9adf60;
       --wc-warning: #ffd166;
       --wc-overlay: rgba(15, 9, 0, .82);
@@ -2436,13 +2500,18 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-table th.size { width: 89px; text-align: right; }
     .wc-table th.date { width: 129px; }
     .wc-table th.perms { width: 91px; }
+    .wc-col-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; z-index: 3; }
+    .wc-col-resize::after { content: ''; position: absolute; top: 6px; bottom: 6px; right: 2px; width: 1px; background: var(--wc-line); }
+    .wc-col-resize:hover::after, .wc-col-resize:focus-visible::after { background: var(--wc-line-strong); width: 2px; }
+    .wc-col-resize:focus-visible { outline: 1px solid var(--wc-line-strong); }
+    body.wc-column-resizing, body.wc-column-resizing * { cursor: col-resize !important; user-select: none !important; }
     .wc-table td { height: max(27px, calc(var(--wc-font-size) + 14px)); padding: 3px 6px; border-bottom: 1px solid var(--wc-grid); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .wc-table td.size { text-align: right; color: var(--wc-muted); }
     .wc-table td.date, .wc-table td.perms { color: var(--wc-muted); }
     .wc-row { cursor: default; user-select: none; }
     .wc-row:hover { background: var(--wc-surface-hover); }
     .wc-row.selected { background: var(--wc-selected); color: var(--wc-selected-text); }
-    .wc-row.selected td, .wc-row.selected .text-secondary, .wc-row.selected .wc-folder, .wc-row.selected .wc-link, .wc-row.selected .wc-file, .wc-row.selected .wc-up { color: var(--wc-selected-text) !important; }
+    .wc-row.selected td, .wc-row.selected .text-secondary, .wc-row.selected .wc-folder, .wc-row.selected .wc-link, .wc-row.selected .wc-file, .wc-row.selected .wc-up, .wc-row.selected .wc-archive-icon { color: var(--wc-selected-text) !important; }
     .wc-row.focused { outline: 1px solid var(--wc-line-strong); outline-offset: -1px; }
     .wc-row.drop-target { color: var(--wc-selected-text); background: var(--wc-selected) !important; outline: 1px solid var(--wc-success); }
     .wc-row.drop-target td { color: var(--wc-selected-text); }
@@ -2451,6 +2520,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-folder { color: var(--wc-folder); }
     .wc-link { color: var(--wc-link); }
     .wc-file { color: var(--wc-file); }
+    .wc-row.archive .wc-name, .wc-archive-icon, .wc-result.archive .wc-result-path { color: var(--wc-archive); }
     .wc-up { color: var(--wc-success); }
     .wc-empty { display: grid; place-items: center; min-height: 150px; color: var(--wc-muted); }
     .wc-pane-status { min-height: 27px; display: flex; align-items: center; gap: 10px; padding: 4px 8px; color: var(--wc-muted); background: var(--wc-panel-2); border-top: 1px solid var(--wc-line); white-space: nowrap; overflow: hidden; }
@@ -2478,6 +2548,12 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
     .wc-input, .wc-select, .wc-textarea { width: 100%; border: 1px solid var(--wc-line); border-radius: 6px; background: var(--wc-surface); color: var(--wc-text); padding: 7px 9px; }
     .wc-textarea { min-height: 360px; resize: vertical; font-family: var(--wc-font); font-size: var(--wc-font-size); line-height: 1.45; tab-size: 2; }
     .wc-check { display: flex; align-items: center; gap: 7px; color: var(--wc-text); }
+    .wc-permission-grid { width: 100%; border-collapse: collapse; margin: 8px 0; }
+    .wc-permission-grid th, .wc-permission-grid td { padding: 9px 7px; border-bottom: 1px solid var(--wc-line); text-align: center; }
+    .wc-permission-grid th:first-child { text-align: left; }
+    .wc-permission-grid input { width: 17px; height: 17px; cursor: pointer; }
+    .wc-permission-special, .wc-permission-presets { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+    .wc-permission-preview { color: var(--wc-accent); font-family: var(--wc-font); margin: 8px 0; }
     .wc-viewer { min-height: 300px; max-height: calc(100vh - 190px); overflow: auto; background: var(--wc-surface); border: 1px solid var(--wc-line); border-radius: 6px; }
     .wc-viewer pre { margin: 0; padding: 13px; color: var(--wc-text); white-space: pre-wrap; word-break: break-word; font-family: var(--wc-font); font-size: var(--wc-font-size); line-height: 1.45; }
     .wc-viewer img, .wc-viewer video { display: block; max-width: 100%; max-height: calc(100vh - 210px); margin: auto; }
@@ -2677,10 +2753,11 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
         <label class="wc-check-label" title="Show dotfiles"><input class="show-hidden" type="checkbox"> Hidden</label>
         <button class="wc-btn select-pattern" title="Select by pattern"><i class="fa-solid fa-check-double"></i></button>
         <button class="wc-btn invert-selection" title="Invert selection"><i class="fa-solid fa-shuffle"></i></button>
+        <button class="wc-btn pane-columns" title="Column widths — saved for this pane, font and size" aria-label="<?= ucfirst($paneId) ?> pane column widths"><i class="fa-solid fa-table-columns"></i></button>
       </div>
       <div class="wc-table-wrap">
         <table class="wc-table">
-          <thead><tr><th><input class="select-all" type="checkbox" aria-label="Select all"></th><th class="name" data-sort="name">Name</th><th class="size" data-sort="size">Size</th><th class="date" data-sort="mtime">Modified</th><th class="perms" data-sort="mode">Mode</th></tr></thead>
+          <thead><tr><th data-column="select"><input class="select-all" type="checkbox" aria-label="Select all"></th><th class="name" data-column="name" data-sort="name">Name</th><th class="size" data-column="size" data-sort="size">Size</th><th class="date" data-column="date" data-sort="mtime">Modified</th><th class="perms" data-column="mode" data-sort="mode">Mode</th></tr></thead>
           <tbody></tbody>
         </table>
         <div class="wc-empty" hidden>No items</div>
@@ -2719,6 +2796,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
   <button data-action="move"><i class="fa-solid fa-right-left fa-fw me-2"></i>Move</button>
   <button data-action="rename"><i class="fa-solid fa-i-cursor fa-fw me-2"></i>Rename</button>
   <button data-action="properties"><i class="fa-solid fa-circle-info fa-fw me-2"></i>Properties</button>
+  <button data-action="permissions"><i class="fa-solid fa-user-shield fa-fw me-2"></i>Permissions / Owner</button>
   <button data-action="tree-selected" id="contextTree"><i class="fa-solid fa-folder-tree fa-fw me-2"></i>Tree</button>
   <button data-action="delete"><i class="fa-solid fa-trash fa-fw me-2"></i>Delete</button>
 </div>
@@ -2782,14 +2860,18 @@ function joinPath(dir, name) {
   return dir ? `${dir}/${name}` : name;
 }
 
+function isArchive(item) {
+  return item.type !== 'dir' && !item.navigable && /\.(?:zip|7z|rar|tar|gz|gzip|tgz|bz|bz2|bzip2|tbz|tbz2|xz|txz|zst|zstd|tzst|lz|lzma|lzh|lzo|cab|arj|ace|jar|war|ear|apk|deb|rpm|iso|r\d{2}|z\d{2}|(?:zip|7z)\.\d{3})$/i.test(item.name);
+}
+
 function fileIcon(item) {
   if (item.type === 'dir' || item.navigable) return '<i class="fa-solid fa-folder wc-folder"></i>';
   if (item.type === 'link') return '<i class="fa-solid fa-link wc-link"></i>';
+  if (isArchive(item)) return '<i class="fa-solid fa-file-zipper wc-archive-icon"></i>';
   const ext = item.name.includes('.') ? item.name.split('.').pop().toLowerCase() : '';
   const map = {
     php:'fa-file-code', html:'fa-file-code', htm:'fa-file-code', js:'fa-file-code', css:'fa-file-code', json:'fa-file-code', xml:'fa-file-code',
     jpg:'fa-file-image', jpeg:'fa-file-image', png:'fa-file-image', gif:'fa-file-image', webp:'fa-file-image', svg:'fa-file-image',
-    zip:'fa-file-zipper', tar:'fa-file-zipper', gz:'fa-file-zipper', tgz:'fa-file-zipper', rar:'fa-file-zipper', '7z':'fa-file-zipper',
     pdf:'fa-file-pdf', doc:'fa-file-word', docx:'fa-file-word', xls:'fa-file-excel', xlsx:'fa-file-excel', csv:'fa-file-csv',
     mp3:'fa-file-audio', wav:'fa-file-audio', ogg:'fa-file-audio', mp4:'fa-file-video', webm:'fa-file-video', mov:'fa-file-video'
   };
@@ -2810,6 +2892,23 @@ function toast(message, error = false, timeout = 3500) {
 
 const THEME_IDS = new Set(['norton', 'midnight', 'solarized-dark', 'solarized-light', 'nord', 'gruvbox', 'dracula', 'monokai', 'forest', 'paper', 'amber']);
 const FONT_IDS = new Set(['lucida', 'consolas', 'cascadia', 'jetbrains', 'fira', 'source-code', 'ibm-plex', 'roboto', 'ubuntu', 'courier']);
+const PANE_COLUMNS = [
+  {id:'select', label:'Selection', min:28}, {id:'name', label:'Name', min:80},
+  {id:'size', label:'Size', min:45}, {id:'date', label:'Modified', min:65}, {id:'mode', label:'Mode', min:40}
+];
+
+function columnProfileKey() {
+  const root = document.documentElement;
+  return `webcommander-columns-v1:${root.dataset.font}:${root.dataset.fontSize}`;
+}
+
+function refreshPaneColumns(restore = false) {
+  Object.values(WC.panes).forEach(pane => {
+    if (restore) pane.restoreColumns();
+    else if (!pane.customColumns) pane.fitColumns();
+    else pane.applyColumnWidths();
+  });
+}
 
 function applyTheme(theme, remember = true) {
   const nextTheme = THEME_IDS.has(theme) ? theme : 'norton';
@@ -2827,6 +2926,7 @@ function applyFont(font, remember = true) {
   if (remember) {
     try { localStorage.setItem('webcommander-font', nextFont); } catch (error) {}
   }
+  refreshPaneColumns(true);
 }
 
 function applyFontSize(value, remember = true) {
@@ -2838,6 +2938,7 @@ function applyFontSize(value, remember = true) {
   if (remember) {
     try { localStorage.setItem('webcommander-font-size', String(nextSize)); } catch (error) {}
   }
+  refreshPaneColumns(true);
 }
 
 applyTheme(document.documentElement.dataset.theme, false);
@@ -2855,6 +2956,11 @@ $('#fontSizeSelect').addEventListener('change', event => {
   applyFontSize(event.target.value);
   toast(`Font size: ${event.target.value}px`);
 });
+window.addEventListener('resize', () => refreshPaneColumns());
+if (document.fonts) {
+  document.fonts.ready.then(() => refreshPaneColumns());
+  document.fonts.addEventListener('loadingdone', () => refreshPaneColumns());
+}
 
 function setBusy(on, message = 'Working…') {
   WC.busy += on ? 1 : -1;
@@ -2908,7 +3014,13 @@ class Pane {
     this.direction = 1;
     this.filter = '';
     this.showHidden = false;
+    this.table = $('.wc-table', this.el);
+    this.headers = $$('thead th[data-column]', this.table);
+    this.columnWidths = [];
+    this.customColumns = false;
     this.bind();
+    this.bindColumns();
+    this.restoreColumns();
   }
 
   bind() {
@@ -2916,6 +3028,7 @@ class Pane {
     $('.pane-home', this.el).addEventListener('click', () => this.load(''));
     $('.pane-up', this.el).addEventListener('click', () => this.load(this.parent));
     $('.pane-refresh', this.el).addEventListener('click', () => this.load(this.path));
+    $('.pane-columns', this.el).addEventListener('click', () => this.editColumns().catch(error => toast(error.message, true, 6000)));
     const pathInput = $('.wc-path', this.el);
     pathInput.addEventListener('keydown', event => {
       if (event.key === 'Enter') {
@@ -2935,7 +3048,8 @@ class Pane {
       this.visibleItems.forEach(item => this.selected.has(item.path) ? this.selected.delete(item.path) : this.selected.add(item.path));
       this.updateRowSelection();
     });
-    $$('th[data-sort]', this.el).forEach(th => th.addEventListener('click', () => {
+    $$('th[data-sort]', this.el).forEach(th => th.addEventListener('click', event => {
+      if (event.target.closest('.wc-col-resize')) return;
       const field = th.dataset.sort;
       if (this.sort === field) this.direction *= -1;
       else { this.sort = field; this.direction = 1; }
@@ -2956,6 +3070,182 @@ class Pane {
       event.preventDefault();
       this.dropData(event, this.path);
     });
+  }
+
+  bindColumns() {
+    this.headers.forEach((header, index) => {
+      const handle = document.createElement('span');
+      handle.className = 'wc-col-resize';
+      handle.tabIndex = 0;
+      handle.setAttribute('role', 'separator');
+      handle.setAttribute('aria-orientation', 'vertical');
+      handle.setAttribute('aria-label', `Resize ${PANE_COLUMNS[index].label} column`);
+      handle.setAttribute('aria-valuemin', PANE_COLUMNS[index].min);
+      handle.setAttribute('aria-valuemax', '5000');
+      handle.title = 'Drag to resize; double-click to fit this column. Arrow keys resize, Enter fits.';
+      header.appendChild(handle);
+      handle.addEventListener('click', event => event.stopPropagation());
+      handle.addEventListener('dblclick', event => {
+        event.preventDefault(); event.stopPropagation();
+        this.columnWidths[index] = this.measureColumnWidth(index);
+        this.applyColumnWidths();
+        this.saveColumns();
+      });
+      handle.addEventListener('keydown', event => {
+        if (event.key === 'Tab') { event.stopPropagation(); return; }
+        if (!['ArrowLeft', 'ArrowRight', 'Enter'].includes(event.key)) return;
+        event.preventDefault(); event.stopPropagation();
+        this.activate();
+        const step = event.shiftKey ? 20 : 5;
+        this.columnWidths[index] = event.key === 'Enter' ? this.measureColumnWidth(index) : Math.max(PANE_COLUMNS[index].min, Math.min(5000, this.columnWidths[index] + (event.key === 'ArrowRight' ? step : -step)));
+        this.applyColumnWidths();
+        this.saveColumns();
+      });
+      handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault(); event.stopPropagation();
+        this.activate();
+        const initialX = event.clientX;
+        const initialWidth = this.columnWidths[index];
+        const pointerId = event.pointerId;
+        this.customColumns = true;
+        document.body.classList.add('wc-column-resizing');
+        const move = pointer => {
+          if (pointer.pointerId !== pointerId) return;
+          this.columnWidths[index] = Math.max(PANE_COLUMNS[index].min, Math.min(5000, Math.round(initialWidth + pointer.clientX - initialX)));
+          this.applyColumnWidths();
+        };
+        const finish = pointer => {
+          if (pointer.pointerId !== undefined && pointer.pointerId !== pointerId) return;
+          document.removeEventListener('pointermove', move);
+          document.removeEventListener('pointerup', finish);
+          document.removeEventListener('pointercancel', finish);
+          handle.removeEventListener('lostpointercapture', finish);
+          window.removeEventListener('blur', finish);
+          document.body.classList.remove('wc-column-resizing');
+          try { if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId); } catch (error) {}
+          this.saveColumns();
+        };
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', finish);
+        document.addEventListener('pointercancel', finish);
+        handle.addEventListener('lostpointercapture', finish);
+        window.addEventListener('blur', finish);
+        try { handle.setPointerCapture(pointerId); } catch (error) {}
+      });
+    });
+    if (typeof ResizeObserver === 'function') {
+      let previousWidth = 0;
+      this.columnObserver = new ResizeObserver(entries => {
+        const width = entries[0].contentRect.width;
+        if (Math.abs(width - previousWidth) < 1) return;
+        previousWidth = width;
+        if (!this.customColumns) this.fitColumns();
+        else this.applyColumnWidths();
+      });
+      this.columnObserver.observe($('.wc-table-wrap', this.el));
+    }
+  }
+
+  visibleColumn(index) {
+    return getComputedStyle(this.headers[index]).display !== 'none';
+  }
+
+  measureColumnWidth(index) {
+    if (index === 0) return 32;
+    const values = [PANE_COLUMNS[index].label];
+    if (index === 2) values.push('1023.9 PB', '<LINK>');
+    if (index === 3) values.push('2099-12-31 23:59');
+    if (index === 4) values.push('7777');
+    this.visibleItems.slice(0, 200).forEach(item => {
+      if (index === 1) values.push(item.name + (item.type === 'link' ? ' → ' + (item.linkTarget || '?') : ''));
+      if (index === 2) values.push(item.type === 'file' ? formatBytes(item.size) : '<DIR>');
+      if (index === 3) values.push(formatDate(item.mtime));
+      if (index === 4) values.push(item.mode || '');
+    });
+    const probe = document.createElement('span');
+    const style = getComputedStyle(this.table);
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;pointer-events:none';
+    probe.style.fontFamily = style.fontFamily;
+    probe.style.fontSize = style.fontSize;
+    this.el.appendChild(probe);
+    const fallback = (Number(document.documentElement.dataset.fontSize) || 13) * .92 * .65;
+    let width = 0;
+    values.forEach(value => {
+      probe.textContent = value;
+      width = Math.max(width, probe.getBoundingClientRect().width || Array.from(value).length * fallback);
+    });
+    probe.remove();
+    return Math.max(PANE_COLUMNS[index].min, Math.min(5000, Math.ceil(width + (index === 1 ? 36 : 20))));
+  }
+
+  autoColumnWidths() {
+    const widths = PANE_COLUMNS.map((column, index) => this.measureColumnWidth(index));
+    const available = $('.wc-table-wrap', this.el).clientWidth;
+    const otherWidths = widths.reduce((total, width, index) => total + (index !== 1 && this.visibleColumn(index) ? width : 0), 0);
+    if (available > 0) widths[1] = Math.max(PANE_COLUMNS[1].min, Math.floor(available - otherWidths));
+    return widths;
+  }
+
+  fitColumns() {
+    this.columnWidths = this.autoColumnWidths();
+    this.applyColumnWidths();
+  }
+
+  applyColumnWidths() {
+    let total = 0;
+    this.headers.forEach((header, index) => {
+      const width = this.columnWidths[index];
+      if (!Number.isFinite(width)) return;
+      header.style.width = width + 'px';
+      $('.wc-col-resize', header).setAttribute('aria-valuenow', Math.round(width));
+      if (this.visibleColumn(index)) total += width;
+    });
+    if (total > 0) this.table.style.width = total + 'px';
+  }
+
+  restoreColumns() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(columnProfileKey()) || '{}')[this.id]; } catch (error) {}
+    this.customColumns = Array.isArray(saved) && saved.length === PANE_COLUMNS.length && saved.every((width, index) => Number.isInteger(width) && width >= PANE_COLUMNS[index].min && width <= 5000);
+    if (this.customColumns) {
+      this.columnWidths = [...saved];
+      this.applyColumnWidths();
+    } else this.fitColumns();
+  }
+
+  saveColumns() {
+    this.customColumns = true;
+    try {
+      const key = columnProfileKey();
+      let profiles = JSON.parse(localStorage.getItem(key) || '{}');
+      if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) profiles = {};
+      profiles[this.id] = [...this.columnWidths];
+      localStorage.setItem(key, JSON.stringify(profiles));
+    } catch (error) {}
+  }
+
+  async editColumns() {
+    this.activate();
+    const label = this.id === 'left' ? 'Left' : 'Right';
+    const profile = $('#fontSelect').selectedOptions[0].textContent + ' · ' + document.documentElement.dataset.fontSize + ' px';
+    const pending = showForm(`${label} pane column widths`, [
+      {type:'html', html:`<div class="wc-result-note mb-2">Saved separately for this pane and ${escapeHtml(profile)}. You can also drag any header edge or double-click it to fit a column.</div><button class="wc-btn" type="button" id="columnsAutoFit"><i class="fa-solid fa-arrows-left-right-to-line"></i> Fit to pane</button>`},
+      ...PANE_COLUMNS.map((column, index) => ({name:column.id, label:column.label + ' (px)', type:'number', value:this.columnWidths[index], min:column.min, max:5000, step:1, required:true}))
+    ], {submitLabel:'Save widths'});
+    $('#columnsAutoFit').addEventListener('click', () => {
+      const widths = this.autoColumnWidths();
+      PANE_COLUMNS.forEach((column, index) => { $(`[name="${column.id}"]`, $('#dialogBody')).value = widths[index]; });
+    });
+    const values = await pending;
+    if (!values) return;
+    this.columnWidths = PANE_COLUMNS.map(column => {
+      const width = Number(values[column.id]);
+      if (!Number.isInteger(width) || width < column.min || width > 5000) throw new Error('Enter valid column widths.');
+      return width;
+    });
+    this.applyColumnWidths();
+    this.saveColumns();
   }
 
   activate() {
@@ -3010,7 +3300,7 @@ class Pane {
     this.visibleItems.forEach((item, index) => {
       const selected = this.selected.has(item.path);
       const title = item.type === 'link' ? `${item.name} → ${item.linkTarget || '?'}` : item.name;
-      rows.push(`<tr class="wc-row${selected ? ' selected' : ''}${this.focused === item.path ? ' focused' : ''}${item.protected ? ' protected' : ''}" data-index="${index}" data-path="${escapeHtml(item.path)}" draggable="true" title="${escapeHtml(title)}">
+      rows.push(`<tr class="wc-row${selected ? ' selected' : ''}${this.focused === item.path ? ' focused' : ''}${item.protected ? ' protected' : ''}${isArchive(item) ? ' archive' : ''}" data-index="${index}" data-path="${escapeHtml(item.path)}" draggable="true" title="${escapeHtml(title)}">
         <td><input class="row-check" type="checkbox" ${selected ? 'checked' : ''} aria-label="Select ${escapeHtml(item.name)}"></td>
         <td class="wc-name"><span class="wc-icon">${fileIcon(item)}</span>${escapeHtml(item.name)}${item.type === 'link' ? ` <span class="text-secondary">→ ${escapeHtml(item.linkTarget || '?')}</span>` : ''}</td>
         <td class="size">${item.type === 'file' ? formatBytes(item.size) : item.type === 'dir' ? '&lt;DIR&gt;' : '&lt;LINK&gt;'}</td>
@@ -3021,6 +3311,7 @@ class Pane {
     this.body.innerHTML = rows.join('');
     $('.wc-empty', this.el).hidden = rows.length !== 0;
     this.updateRowSelection();
+    if (!this.customColumns) this.fitColumns();
   }
 
   updateRowSelection() {
@@ -3204,7 +3495,7 @@ function fieldHtml(field) {
     return `<div class="wc-field"><label>${escapeHtml(field.label)}</label><select class="wc-select" name="${escapeHtml(field.name)}">${options}</select></div>`;
   }
   if (field.type === 'textarea') return `<div class="wc-field"><label>${escapeHtml(field.label)}</label><textarea class="wc-textarea" name="${escapeHtml(field.name)}" ${field.required ? 'required' : ''} spellcheck="false">${escapeHtml(field.value ?? '')}</textarea></div>`;
-  return `<div class="wc-field"><label>${escapeHtml(field.label)}</label><input class="wc-input" name="${escapeHtml(field.name)}" type="${escapeHtml(field.type || 'text')}" value="${escapeHtml(field.value ?? '')}" ${field.placeholder ? `placeholder="${escapeHtml(field.placeholder)}"` : ''} ${field.required ? 'required' : ''} ${field.minlength ? `minlength="${field.minlength}"` : ''} autocomplete="${field.type === 'password' ? 'new-password' : 'off'}">${field.help ? `<div class="wc-result-note mt-1">${escapeHtml(field.help)}</div>` : ''}</div>`;
+  return `<div class="wc-field"><label>${escapeHtml(field.label)}</label><input class="wc-input" name="${escapeHtml(field.name)}" type="${escapeHtml(field.type || 'text')}" value="${escapeHtml(field.value ?? '')}" ${field.placeholder ? `placeholder="${escapeHtml(field.placeholder)}"` : ''} ${field.required ? 'required' : ''} ${field.minlength ? `minlength="${field.minlength}"` : ''} ${field.min !== undefined ? `min="${escapeHtml(field.min)}"` : ''} ${field.max !== undefined ? `max="${escapeHtml(field.max)}"` : ''} ${field.step !== undefined ? `step="${escapeHtml(field.step)}"` : ''} autocomplete="${field.type === 'password' ? 'new-password' : 'off'}">${field.help ? `<div class="wc-result-note mt-1">${escapeHtml(field.help)}</div>` : ''}</div>`;
 }
 
 function showForm(title, fields, options = {}) {
@@ -3536,7 +3827,7 @@ async function actionSearch() {
   ], {submitLabel:'Search'});
   if (!values) return;
   const result = await api('search', {base:pane.path, ...values});
-  const rows = result.results.map(item => `<div class="wc-result" data-result-path="${escapeHtml(item.path)}" data-result-type="${escapeHtml(item.type)}"><div><div class="wc-result-path">${fileIcon(item)} ${escapeHtml(fullPathDisplay(item.path))}</div>${item.snippet ? `<div class="wc-result-note">${escapeHtml(item.snippet)}</div>` : ''}</div><div class="wc-result-note">${item.type === 'file' ? formatBytes(item.size) : item.type}</div></div>`).join('');
+  const rows = result.results.map(item => `<div class="wc-result${isArchive(item) ? ' archive' : ''}" data-result-path="${escapeHtml(item.path)}" data-result-type="${escapeHtml(item.type)}"><div><div class="wc-result-path">${fileIcon(item)} ${escapeHtml(fullPathDisplay(item.path))}</div>${item.snippet ? `<div class="wc-result-note">${escapeHtml(item.snippet)}</div>` : ''}</div><div class="wc-result-note">${item.type === 'file' ? formatBytes(item.size) : item.type}</div></div>`).join('');
   showContent(`Search results (${result.results.length})`, `<div class="mb-2 text-secondary">Scanned ${result.scanned.toLocaleString()} items${result.limited ? ' — result limit reached' : ''}</div><div class="wc-result-list">${rows || '<div class="p-3 text-secondary">No matches.</div>'}</div>`);
   $$('.wc-result[data-result-path]', $('#dialogBody')).forEach(node => node.addEventListener('dblclick', async () => {
     const path = node.dataset.resultPath;
@@ -3702,17 +3993,101 @@ async function actionProperties() {
   showContent('Properties', `<div class="mb-2">Total: <strong>${formatBytes(result.totalSize)}</strong> in <strong>${result.totalItems.toLocaleString()}</strong> item(s)</div><table class="wc-info-table">${rows}</table>`);
 }
 
+function permissionSymbol(mode) {
+  const bits = [0o400, 0o200, 0o100, 0o40, 0o20, 0o10, 0o4, 0o2, 0o1];
+  const chars = bits.map((bit, index) => mode & bit ? 'rwx'[index % 3] : '-');
+  if (mode & 0o4000) chars[2] = mode & 0o100 ? 's' : 'S';
+  if (mode & 0o2000) chars[5] = mode & 0o10 ? 's' : 'S';
+  if (mode & 0o1000) chars[8] = mode & 0o1 ? 't' : 'T';
+  return chars.join('');
+}
+
 async function actionPermissions() {
-  const items = activePane().getSelected();
+  const paths = selectedPaths();
+  const info = await api('permission_info', {paths});
+  const items = info.details;
+  if (items.some(item => item.protected)) throw new Error('Protected application files cannot be changed.');
   const first = items[0];
-  const values = await showForm('Permissions and ownership', [
-    {name:'mode', label:'Permissions (octal; blank leaves unchanged)', value:first.mode || ''},
-    {name:'owner', label:'Owner name or UID (blank leaves unchanged)', value:''},
-    {name:'group', label:'Group name or GID (blank leaves unchanged)', value:''},
+  const mixed = items.some(item => item.mode !== first.mode);
+  const regular = items.some(item => item.type !== 'link');
+  const initialMode = /^[0-7]{3,4}$/.test(first.mode) ? first.mode.padStart(4, '0') : '0000';
+  const bitInput = (bit, label) => `<input type="checkbox" data-permission-bit="${bit}" aria-label="${escapeHtml(label)}">`;
+  const grid = [['Owner', 0o400, 0o200, 0o100], ['Group', 0o40, 0o20, 0o10], ['Others', 0o4, 0o2, 0o1]].map(([label, read, write, execute]) => `<tr><th scope="row">${label}</th><td>${bitInput(read, label + ' read')}</td><td>${bitInput(write, label + ' write')}</td><td>${bitInput(execute, label + ' execute')}</td></tr>`).join('');
+  const special = [[0o4000, 'Set UID'], [0o2000, 'Set GID'], [0o1000, 'Sticky bit']].map(([bit, label]) => `<label class="wc-check">${bitInput(bit, label)} ${label}</label>`).join('');
+  const presets = ['0644', '0664', '0755', '0750', '0600', '0700'].map(mode => `<button class="wc-btn" type="button" data-permission-preset="${mode}">${mode}</button>`).join('');
+  const ownershipOptions = (accounts, field, idField) => {
+    const choices = new Map();
+    [...accounts, ...items.map(item => ({name:item[field], id:item[idField]}))].forEach(account => {
+      choices.set(String(account.id), `${account.name} (${account.id})`);
+    });
+    return [['', 'Keep existing ' + (field === 'owner' ? 'owner' : 'group')], ...Array.from(choices).sort((a, b) => a[1].localeCompare(b[1])), ['__custom__', 'Other name or ID…']];
+  };
+  const currentOwners = [...new Set(items.map(item => `${item.owner} (${item.uid})`))].join(', ');
+  const currentGroups = [...new Set(items.map(item => `${item.group} (${item.gid})`))].join(', ');
+  const selectedNote = paths.length === 1 ? fullPathDisplay(first.path) : paths.length.toLocaleString() + ' selected items';
+  const note = mixed ? 'Selected items have different modes. Enable “Change permissions” to apply the grid to all regular items.' : 'Use the grid or enter an octal value. Ownership can be changed independently.';
+  const pending = showForm('Permissions and ownership', [
+    {type:'html', html:`<div class="wc-mono mb-2">${escapeHtml(selectedNote)}</div><div class="wc-result-note">${escapeHtml(note)}${items.some(item => item.type === 'link') ? '<br>Links keep their permissions; ownership changes apply to the link itself.' : ''}</div>`},
+    {name:'change_mode', label:'Change permissions', type:'checkbox', value:regular && !mixed},
+    {type:'html', html:`<table class="wc-permission-grid"><thead><tr><th>Who</th><th>Read</th><th>Write</th><th>Execute</th></tr></thead><tbody>${grid}</tbody></table><div class="wc-permission-special">${special}</div><div class="wc-permission-presets">${presets}</div><div class="wc-permission-preview" id="permissionPreview" aria-live="polite"></div>`},
+    {name:'mode', label:'Octal permissions', value:initialMode},
+    {type:'html', html:`<div class="wc-result-note">Current owner: ${escapeHtml(currentOwners)}<br>Current group: ${escapeHtml(currentGroups)}</div>`},
+    {name:'owner', label:'New owner', type:'select', value:'', options:ownershipOptions(info.users, 'owner', 'uid')},
+    {name:'owner_custom', label:'Owner name or UID', value:''},
+    {name:'group', label:'New group', type:'select', value:'', options:ownershipOptions(info.groups, 'group', 'gid')},
+    {name:'group_custom', label:'Group name or GID', value:''},
     {name:'recursive', label:'Apply recursively inside selected directories', type:'checkbox', value:false}
   ], {submitLabel:'Apply'});
+  const body = $('#dialogBody');
+  const modeInput = $('[name="mode"]', body);
+  const changeMode = $('[name="change_mode"]', body);
+  const checks = $$('[data-permission-bit]', body);
+  const presetButtons = $$('[data-permission-preset]', body);
+  const preview = $('#permissionPreview');
+  modeInput.pattern = '[0-7]{3,4}';
+  modeInput.maxLength = 4;
+  const syncMode = () => {
+    if (!/^[0-7]{3,4}$/.test(modeInput.value)) { preview.textContent = 'Enter three or four octal digits (0–7).'; return; }
+    const mode = Number.parseInt(modeInput.value, 8);
+    checks.forEach(check => { check.checked = !!(mode & Number(check.dataset.permissionBit)); });
+    preview.textContent = mode.toString(8).padStart(4, '0') + ' · ' + permissionSymbol(mode);
+  };
+  const toggleMode = () => {
+    modeInput.disabled = !changeMode.checked || !regular;
+    modeInput.required = !modeInput.disabled;
+    checks.forEach(check => { check.disabled = modeInput.disabled; });
+    presetButtons.forEach(button => { button.disabled = modeInput.disabled; });
+    preview.style.opacity = modeInput.disabled ? '.5' : '1';
+  };
+  if (!regular) changeMode.disabled = true;
+  changeMode.addEventListener('change', toggleMode);
+  modeInput.addEventListener('input', syncMode);
+  checks.forEach(check => check.addEventListener('change', () => {
+    const mode = checks.reduce((value, current) => value | (current.checked ? Number(current.dataset.permissionBit) : 0), 0);
+    modeInput.value = mode.toString(8).padStart(4, '0');
+    syncMode();
+  }));
+  presetButtons.forEach(button => button.addEventListener('click', () => { modeInput.value = button.dataset.permissionPreset; syncMode(); }));
+  ['owner', 'group'].forEach(field => {
+    const select = $(`[name="${field}"]`, body);
+    const custom = $(`[name="${field}_custom"]`, body);
+    const update = () => {
+      const active = select.value === '__custom__';
+      custom.closest('.wc-field').hidden = !active;
+      custom.disabled = !active;
+      custom.required = active;
+    };
+    select.addEventListener('change', update);
+    update();
+  });
+  syncMode(); toggleMode();
+  const values = await pending;
   if (!values) return;
-  const result = await api('chmod_chown', {paths:items.map(item => item.path), ...values});
+  const owner = String(values.owner === '__custom__' ? values.owner_custom : values.owner || '').trim();
+  const group = String(values.group === '__custom__' ? values.group_custom : values.group || '').trim();
+  const mode = values.change_mode && regular ? values.mode : '';
+  if (mode === '' && owner === '' && group === '') { toast('No changes selected.'); return; }
+  const result = await api('chmod_chown', {paths, mode, owner, group, recursive:values.recursive});
   toast(`Updated ${result.count} item(s).`);
   await reloadBoth();
 }

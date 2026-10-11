@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.8'); // Increment this for every published update.
+define('MC_VERSION', '1.9'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -2703,7 +2703,7 @@ $diskTotal = disk_total_space(MC_ROOT_REAL);
         <button class="wc-btn invert-selection" title="Invert selection"><i class="fa-solid fa-shuffle"></i></button>
         <button class="wc-btn pane-columns" title="Column widths — saved for this pane, font and size" aria-label="<?= ucfirst($paneId) ?> pane column widths"><i class="fa-solid fa-table-columns"></i></button>
       </div>
-      <div class="wc-table-wrap">
+      <div class="wc-table-wrap" tabindex="0" role="region" aria-label="<?= ucfirst($paneId) ?> file pane">
         <table class="wc-table">
           <thead><tr><th data-column="select"><input class="select-all" type="checkbox" aria-label="Select all"></th><th class="name" data-column="name" data-sort="name">Name</th><th class="size" data-column="size" data-sort="size">Size</th><th class="date" data-column="date" data-sort="mtime">Modified</th><th class="perms" data-column="mode" data-sort="mode">Mode</th></tr></thead>
           <tbody></tbody>
@@ -3069,6 +3069,7 @@ class Pane {
     this.id = id;
     this.el = $(`#pane-${id}`);
     this.body = $('tbody', this.el);
+    this.list = $('.wc-table-wrap', this.el);
     this.path = '';
     this.parent = '';
     this.items = [];
@@ -3091,15 +3092,16 @@ class Pane {
 
   bind() {
     this.el.addEventListener('mousedown', () => this.activate());
-    $('.pane-home', this.el).addEventListener('click', () => this.load(''));
-    $('.pane-up', this.el).addEventListener('click', () => this.load(this.parent));
-    $('.pane-refresh', this.el).addEventListener('click', () => this.load(this.path));
+    this.el.addEventListener('focusin', () => this.activate());
+    $('.pane-home', this.el).addEventListener('click', () => this.load('', true));
+    $('.pane-up', this.el).addEventListener('click', () => this.load(this.parent, true));
+    $('.pane-refresh', this.el).addEventListener('click', () => this.load(this.path, true));
     $('.pane-columns', this.el).addEventListener('click', () => this.editColumns().catch(error => toast(error.message, true, 6000)));
     const pathInput = $('.wc-path', this.el);
     pathInput.addEventListener('keydown', event => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        this.load(pathInput.value.replace(/^\/+|\/+$/g, ''));
+        if (!event.repeat && !WC.busy) this.load(pathInput.value.replace(/^\/+|\/+$/g, ''), true);
       }
     });
     $('.wc-filter', this.el).addEventListener('input', event => { this.filter = event.target.value; this.render(); });
@@ -3314,13 +3316,14 @@ class Pane {
     this.saveColumns();
   }
 
-  activate() {
+  activate(focus = false) {
     WC.active = this.id;
     Object.values(WC.panes).forEach(pane => pane.el.classList.toggle('active', pane.id === this.id));
+    if (focus) this.list.focus({preventScroll:true});
     this.updateStatus();
   }
 
-  async load(path = this.path) {
+  async load(path = this.path, focus = false) {
     this.activate();
     try {
       const result = await api('list', {path});
@@ -3332,6 +3335,8 @@ class Pane {
       this.anchorIndex = null;
       $('.wc-path', this.el).value = fullPathDisplay(this.path);
       this.render();
+      this.list.scrollTop = 0;
+      if (focus && WC.active === this.id && !dialog.open) this.activate(true);
       setStatus(`${this.id === 'left' ? 'Left' : 'Right'}: ${fullPathDisplay(this.path)}`);
     } catch (error) {
       toast(error.message, true, 6000);
@@ -3355,7 +3360,22 @@ class Pane {
       if (field === 'name' || field === 'mode') return String(av ?? '').localeCompare(String(bv ?? ''), undefined, {numeric:true, sensitivity:'base'}) * direction;
       return ((Number(av) || 0) - (Number(bv) || 0)) * direction;
     });
+    if (!this.visibleItems.some(item => item.path === this.focused)) {
+      this.focused = this.visibleItems[0]?.path ?? null;
+      this.anchorIndex = this.focused === null ? null : 0;
+    }
     this.renderRowsOnly();
+  }
+
+  moveCurrent(direction) {
+    if (!this.visibleItems.length) return;
+    const current = this.visibleItems.findIndex(item => item.path === this.focused);
+    const index = Math.max(0, Math.min(this.visibleItems.length - 1, current + direction));
+    this.focused = this.visibleItems[index].path;
+    this.anchorIndex = index;
+    this.activate(true);
+    this.updateRowSelection();
+    $$('tr[data-path]', this.body)[index].scrollIntoView({block:'nearest', inline:'nearest'});
   }
 
   renderRowsOnly() {
@@ -3386,6 +3406,7 @@ class Pane {
       const selected = this.selected.has(row.dataset.path);
       row.classList.toggle('selected', selected);
       row.classList.toggle('focused', this.focused === row.dataset.path);
+      row.setAttribute('aria-current', this.focused === row.dataset.path ? 'true' : 'false');
       $('.row-check', row).checked = selected;
     });
     $('.select-all', this.el).checked = this.visibleItems.length > 0 && this.visibleItems.every(item => this.selected.has(item.path));
@@ -3427,6 +3448,7 @@ class Pane {
     }
     this.focused = item.path;
     this.updateRowSelection();
+    this.activate(true);
   }
 
   handleDoubleClick(event) {
@@ -3436,12 +3458,12 @@ class Pane {
     const row = event.target.closest('tr');
     if (!row) return;
     if (row.dataset.parent) {
-      this.load(this.parent);
+      this.load(this.parent, true);
       return;
     }
     const item = this.rowItem(row);
     if (!item) return;
-    if (item.type === 'dir' || item.navigable) this.load(item.path);
+    if (item.type === 'dir' || item.navigable) this.load(item.path, true);
     else {
       this.selected.clear();
       this.selected.add(item.path);
@@ -3545,8 +3567,16 @@ class Pane {
 
   getSelected(require = true) {
     const result = this.items.filter(item => this.selected.has(item.path));
+    if (require && result.length === 0) {
+      const current = this.getCurrent();
+      if (current) result.push(current);
+    }
     if (require && result.length === 0) throw new Error('Select at least one item.');
     return result;
+  }
+
+  getCurrent() {
+    return this.visibleItems.find(item => item.path === this.focused);
   }
 }
 
@@ -3574,7 +3604,9 @@ function showForm(title, fields, options = {}) {
   $('#dialogSubmit').classList.toggle('danger', !!options.danger);
   dialog.showModal();
   const first = $('.wc-input, .wc-select, .wc-textarea', $('#dialogBody'));
-  if (first) setTimeout(() => first.focus(), 30);
+  // Destructive forms always start on Cancel, before another key can arrive.
+  if (options.danger) $('#dialogActions [data-dialog-close]').focus();
+  else if (first) first.focus();
   return new Promise(resolve => { dialogResolver = resolve; });
 }
 
@@ -3637,8 +3669,9 @@ function activePane() { return WC.panes[WC.active]; }
 function otherPane() { return WC.panes[WC.active === 'left' ? 'right' : 'left']; }
 
 async function reloadBoth() {
+  const pane = activePane();
   await Promise.all([WC.panes.left.load(WC.panes.left.path), WC.panes.right.load(WC.panes.right.path)]);
-  activePane().activate();
+  pane.activate();
 }
 
 function selectedPaths() {
@@ -3705,9 +3738,8 @@ async function showTextView(item) {
   renderPage();
 }
 
-async function actionView() {
-  const item = activePane().getSelected()[0];
-  if (item.type === 'dir' || item.navigable) { activePane().load(item.path); return; }
+async function actionView(item = activePane().getSelected()[0]) {
+  if (item.type === 'dir' || item.navigable) { await activePane().load(item.path, true); return; }
   try {
     const props = await api('properties', {paths:[item.path]});
     const mime = props.details[0]?.mime || 'application/octet-stream';
@@ -3788,8 +3820,7 @@ async function actionRename() {
   await activePane().load(activePane().path);
 }
 
-async function actionDelete() {
-  const items = activePane().getSelected();
+async function actionDelete(items = activePane().getSelected()) {
   const list = items.slice(0, 12).map(item => `<li>${escapeHtml(item.name)}</li>`).join('') + (items.length > 12 ? `<li>…and ${items.length - 12} more</li>` : '');
   const values = await showForm('Permanently delete', [
     {type:'html', html:`<div class="alert alert-danger">This operation cannot be undone.</div><ul>${list}</ul>`},
@@ -4259,11 +4290,11 @@ const actionMap = {
   permissions:actionPermissions, touch:actionTouch, link:actionLink, checksum:actionChecksum, refresh:reloadBoth, update:actionUpdate, theme:actionTheme, password:actionPassword, logout:actionLogout
 };
 
-async function runAction(name) {
+async function runAction(name, item) {
   hideContext();
   const action = actionMap[name];
   if (!action) return;
-  try { await action(); }
+  try { await action(name === 'delete' && item ? [item] : item); }
   catch (error) { toast(error.message || String(error), true, 6000); }
 }
 
@@ -4289,17 +4320,37 @@ $('#fileUpload').addEventListener('change', event => uploadFiles(event.target.fi
 $('#folderUpload').addEventListener('change', event => uploadFiles(event.target.files));
 
 document.addEventListener('keydown', event => {
-  if (dialog.open || event.target.matches('input,textarea,select')) return;
+  if (event.defaultPrevented || dialog.open || event.target.isContentEditable || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.target.matches('input,textarea,select') && !event.target.matches('.row-check,.select-all')) return;
+  if (event.key === 'Tab') { event.preventDefault(); otherPane().activate(true); return; }
   const keys = {F3:'view',F4:'edit',F5:'copy',F6:'move',F7:'mkdir',F8:'delete',F9:'password',F10:'logout'};
-  if (keys[event.key]) { event.preventDefault(); runAction(keys[event.key]); return; }
+  if (keys[event.key]) {
+    event.preventDefault();
+    if (!event.repeat && !WC.busy) runAction(keys[event.key]);
+    return;
+  }
   const pane = activePane();
-  if (event.key === 'Backspace') { event.preventDefault(); pane.load(pane.parent); }
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault();
+    if (!WC.busy) pane.moveCurrent(event.key === 'ArrowUp' ? -1 : 1);
+  }
+  if (event.key === 'Backspace') {
+    event.preventDefault();
+    if (!event.repeat && !WC.busy) pane.load(pane.parent, true);
+  }
+  if (event.key === 'Enter' || event.key === 'Delete') {
+    if (event.key === 'Enter' && event.target.closest('button,a,[role=button],#paneSeparator,.wc-col-resize')) return;
+    event.preventDefault();
+    const item = pane.getCurrent();
+    if (item && !event.repeat && !WC.busy) runAction(event.key === 'Enter' ? 'view' : 'delete', item);
+  }
   if (event.key === 'Insert' && pane.focused) {
     event.preventDefault();
-    pane.selected.has(pane.focused) ? pane.selected.delete(pane.focused) : pane.selected.add(pane.focused);
-    pane.updateRowSelection();
+    if (!event.repeat && !WC.busy) {
+      pane.selected.has(pane.focused) ? pane.selected.delete(pane.focused) : pane.selected.add(pane.focused);
+      pane.updateRowSelection();
+    }
   }
-  if (event.key === 'Tab') { event.preventDefault(); otherPane().activate(); }
 }
 );
 
@@ -4317,7 +4368,7 @@ if (WC.diskFree !== null && WC.diskTotal !== null) {
 
 updateClock();
 setInterval(updateClock, 1000);
-Promise.all([WC.panes.left.load(''), WC.panes.right.load('')]).then(() => WC.panes.left.activate());
+Promise.all([WC.panes.left.load(''), WC.panes.right.load('')]).then(() => WC.panes.left.activate(true));
 </script>
 </body>
 </html>

@@ -4,7 +4,7 @@
  * Run: node tests/keyboard_navigation.js [path/to/webcommander.php]
  * Requires Node.js, Playwright with Chromium, and PHP 7.4+ CLI (test tooling only).
  * Optional: PHP_BINARY, PHP_INI, CHROMIUM_EXECUTABLE, QA_SCREENSHOT.
- * Exercises real keyboard/mouse events and authenticated HTTP actions in a
+ * Exercises keyboard/mouse navigation, offline syntax view/edit, and HTTP actions in a
  * disposable root. No existing deployment or user files are touched.
  */
 
@@ -29,7 +29,7 @@ async function main() {
     fs.mkdirSync(root);
     fs.mkdirSync(sessions);
     fs.copyFileSync(process.argv[2] || path.join(__dirname, '..', 'webcommander.php'), path.join(root, 'webcommander.php'));
-    for (const directory of ['00-first/00-child', '10-empty', '20-many', '30-files']) {
+    for (const directory of ['00-first/00-child', '10-empty', '20-many', '30-files', '40-code']) {
       fs.mkdirSync(path.join(root, directory), {recursive:true});
     }
     for (const name of ['alpha.txt', 'beta.txt', 'gamma.txt']) {
@@ -37,6 +37,35 @@ async function main() {
     }
     fs.writeFileSync(path.join(root, '00-first', 'child.txt'), 'Child file\n');
     fs.writeFileSync(path.join(root, '30-files', '.hidden.txt'), 'Hidden file\n');
+    const samples = {
+      'sample.html':['HTML', '<!doctype html>\n<html><style>body { color: red; }</style><script>const count = 42; window.highlightProbe = true;</script><body>Literal &lt;code&gt;</body></html>\n'],
+      'sample.js':['JavaScript', '// A comment\nconst count = 42;\nfunction greet(name) { return "Hello " + name; }\n'],
+      'sample.php':['PHP', '<?php\n// A PHP comment\n$count = 42;\necho "<script>window.highlightProbe = true;</script>";\n?>\n<div>Hello</div><script>const value = 7;</script>\n'],
+      'sample.py':['Python', '# A Python comment\ndef greet(name):\n  return "Hello " + name\ncount = 42\n'],
+      'sample.c':['C', '#include <stdio.h>\n/* A C comment */\nint main(void) { printf("Hello"); return 42; }\n'],
+      'sample.cpp':['C++', '#include <iostream>\nclass Example { public: int value = 42; };\nint main() { return 0; }\n'],
+      'sample.pas':['Pascal', 'program Example;\n{ A Pascal comment }\nvar count: integer;\nbegin\n  count := 42;\n  writeln(\'Hello\');\nend.\n'],
+      'sample.css':['CSS', '/* A CSS comment */\nbody { color: red; padding: 2px; }\n'],
+      'sample.json':['JSON', '{"count": 42, "enabled": true, "name": "Example"}\n'],
+      'sample.sql':['SQL', '-- A SQL comment\nSELECT id, name FROM users WHERE id = 42;\n'],
+      'sample.ts':['TypeScript', 'interface Example { count: number; }\nconst item: Example = { count: 42 };\n'],
+      'sample.jsx':['JSX', 'const element = <div className="example">Hello</div>;\n'],
+      'sample.yaml':['YAML', '# A YAML comment\nname: Example\ncount: 42\n']
+    };
+    for (const [name, [, content]] of Object.entries(samples)) fs.writeFileSync(path.join(root, '40-code', name), content);
+    const multilineCode = '/*\n' + 'A comment that crosses the old page boundary.\n'.repeat(2800) + '*/\nconst afterComment = 42;\n';
+    fs.writeFileSync(path.join(root, '40-code', 'multiline.js'), multilineCode);
+    const largeCode = 'const value = 42;\n'.repeat(330000);
+    fs.writeFileSync(path.join(root, '40-code', 'large.js'), largeCode);
+    const largeText = 'A plain-text log entry.\n'.repeat(10000);
+    fs.writeFileSync(path.join(root, '40-code', 'log.txt'), largeText);
+    const windowsCode = '\uFEFF// Windows line endings\r\nconst count = 42;\r\n';
+    fs.writeFileSync(path.join(root, '40-code', 'windows.js'), windowsCode);
+    fs.writeFileSync(path.join(root, '40-code', 'empty.py'), '');
+    fs.writeFileSync(path.join(root, '40-code', 'unknown.blob'), 'Plain text without a recognized extension\n');
+    fs.writeFileSync(path.join(root, '40-code', 'script'), '#!/usr/bin/env python3\nprint("Hello")\n');
+    fs.writeFileSync(path.join(root, '40-code', 'UPPER.PHP'), samples['sample.php'][1]);
+    fs.writeFileSync(path.join(root, '40-code', 'legacy.pas'), Buffer.concat([Buffer.from('{ Windows-1252: caf'), Buffer.from([0xe8]), Buffer.from(' }\n'.repeat(40000))]));
     for (let index = 0; index < 60; index++) {
       fs.writeFileSync(path.join(root, '20-many', String(index).padStart(2, '0') + '.txt'), 'Scroll fixture\n');
     }
@@ -75,7 +104,12 @@ async function main() {
     const context = await browser.newContext({viewport:{width:1280, height:720}});
     // The app's own CSS and JavaScript are inline; external fonts/icons are not
     // needed to verify its behavior and must not make the suite network-dependent.
-    await context.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.continue() : route.abort());
+    const externalRequests = [];
+    await context.route('**/*', route => {
+      if (new URL(route.request().url()).origin === new URL(url).origin) return route.continue();
+      externalRequests.push(route.request().url());
+      return route.abort();
+    });
     const setup = await context.request.post(url, {form:{
       auth_action:'setup', password:'keyboard-regression-password', confirm_password:'keyboard-regression-password'
     }});
@@ -249,13 +283,14 @@ async function main() {
     await test('keyboard shortcuts do not interfere with the text editor', async () => {
       await page.keyboard.press('F4');
       await page.waitForFunction(() => document.querySelector('#mainDialog').open);
-      const editor = page.locator('textarea[name=content]');
-      await editor.fill('Editable text');
-      await editor.press('End');
+      const editor = page.locator('#dialogBody .CodeMirror');
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.type('Editable text');
+      await page.keyboard.press('End');
       await page.keyboard.press('Backspace');
       await page.keyboard.press('Enter');
       await page.keyboard.type('Second line');
-      assert.equal(await editor.inputValue(), 'Editable tex\nSecond line');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), 'Editable tex\nSecond line');
       assert.equal(deletions.length, 1);
       await page.keyboard.press('Escape');
       await dialogClosed();
@@ -337,6 +372,181 @@ async function main() {
       await dialogClosed();
       assert.equal(deletions.length, 1);
       assert.equal(fs.existsSync(path.join(root, '20-many/00.txt')), true);
+    });
+    const openCode = async (name, editing = false) => {
+      await navigate('left', '40-code');
+      const filter = pane('left').locator('.wc-filter');
+      await filter.fill(name);
+      await list('left').focus();
+      await page.keyboard.press(editing ? 'F4' : 'Enter');
+      await page.waitForFunction(() => document.querySelector('#mainDialog').open && document.querySelector('#dialogBody .CodeMirror'));
+      await idle();
+      return page.locator('#dialogBody .CodeMirror');
+    };
+    const closeCode = async () => {
+      await page.keyboard.press('Escape');
+      await dialogClosed();
+    };
+    await test('embedded highlighter and UI versions are recorded and load offline', async () => {
+      assert.equal(await page.evaluate(() => CodeMirror.version), '5.65.21');
+      assert.equal(await page.locator('link[rel=stylesheet]').count(), 0);
+      assert.equal(await page.locator('script[src]').count(), 0);
+      const source = fs.readFileSync(path.join(root, 'webcommander.php'), 'utf8');
+      for (const line of ["MC_CODEMIRROR_VERSION', '5.65.21'", "MC_BOOTSTRAP_VERSION', '5.3.3'", "MC_FONT_AWESOME_VERSION', '6.5.2'"]) assert.ok(source.includes(line));
+      assert.ok(source.includes('Permission is hereby granted'));
+      assert.ok(fs.statSync(path.join(root, 'webcommander.php')).size < 2 * 1024 * 1024);
+      assert.deepEqual(externalRequests, []);
+    });
+    for (const [name, [language, content]] of Object.entries(samples)) {
+      await test(`syntax View and Edit automatically recognize ${language}`, async () => {
+        for (const editing of [false, true]) {
+          const editor = await openCode(name, editing);
+          assert.equal(await page.locator('[data-code-language] option').first().textContent(), 'Auto (' + language + ')');
+          assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), content);
+          await page.waitForFunction(() => document.querySelector('#dialogBody .CodeMirror [class*=cm-]'));
+          assert.ok(await editor.locator('[class*=cm-]').count() > 0);
+          assert.equal(await page.evaluate(() => window.highlightProbe), undefined);
+          await closeCode();
+        }
+      });
+    }
+    await test('HTML/PHP highlighting never executes embedded software', async () => {
+      const editor = await openCode('sample.html');
+      assert.ok(await editor.locator('.cm-tag').count() > 0);
+      assert.ok(await editor.locator('.cm-keyword').count() > 0);
+      assert.equal(await page.evaluate(() => window.highlightProbe), undefined);
+      await closeCode();
+    });
+    await test('readonly syntax View cannot change the file or its content', async () => {
+      const editor = await openCode('sample.js');
+      await editor.click();
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.type('Changed by mistake');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), samples['sample.js'][1]);
+      assert.equal(fs.readFileSync(path.join(root, '40-code/sample.js'), 'utf8'), samples['sample.js'][1]);
+      await closeCode();
+    });
+    await test('syntax can be overridden and wrap can be toggled without changing text', async () => {
+      const editor = await openCode('unknown.blob', true);
+      assert.equal(await page.locator('[data-code-language] option').first().textContent(), 'Auto (Plain text)');
+      await page.locator('[data-code-language]').selectOption('text/javascript');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getOption('mode')), 'text/javascript');
+      await page.locator('[data-code-wrap]').check();
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getOption('lineWrapping')), true);
+      await page.locator('[data-code-language]').selectOption('text/plain');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), 'Plain text without a recognized extension\n');
+      await closeCode();
+    });
+    await test('extension aliases, uppercase names and shebang scripts are detected', async () => {
+      for (const [name, language] of [['UPPER.PHP', 'PHP'], ['script', 'Python']]) {
+        await openCode(name);
+        assert.equal(await page.locator('[data-code-language] option').first().textContent(), 'Auto (' + language + ')');
+        await closeCode();
+      }
+    });
+    await test('source across a page boundary retains multiline syntax state', async () => {
+      const editor = await openCode('multiline.js');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), multilineCode);
+      assert.equal(await page.locator('#viewPagination').getAttribute('hidden'), '');
+      await editor.evaluate(element => element.CodeMirror.scrollIntoView({line:2803, ch:0}));
+      await page.waitForFunction(() => [...document.querySelectorAll('#dialogBody .cm-keyword')].some(element => element.textContent === 'const'));
+      await closeCode();
+    });
+    await test('large source and plain-text logs retain bounded pagination', async () => {
+      for (const [name, content] of [['large.js', largeCode], ['log.txt', largeText]]) {
+        const editor = await openCode(name);
+        assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), content.slice(0, 100 * 1024));
+        assert.equal(await page.locator('#viewPagination').getAttribute('hidden'), null);
+        await page.locator('#viewNext').click();
+        await page.waitForFunction(() => document.querySelector('#viewPage').value === '2' && document.querySelector('#textViewer').getAttribute('aria-busy') === 'false');
+        assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), content.slice(100 * 1024, 200 * 1024));
+        await closeCode();
+      }
+    });
+    await test('legacy text encoding still has a readable paginated source preview', async () => {
+      const editor = await openCode('legacy.pas');
+      assert.ok((await editor.evaluate(element => element.CodeMirror.getValue())).startsWith('{ Windows-1252: caf'));
+      assert.equal(await page.locator('#viewPagination').getAttribute('hidden'), null);
+      await closeCode();
+    });
+    await test('editing highlights live, preserves undo, indents and saves with a backup', async () => {
+      const editor = await openCode('sample.js', true);
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.type('const changed = 99;');
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Tab');
+      await page.keyboard.type('return "Updated";');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), 'const changed = 99;\n  return "Updated";');
+      await page.waitForFunction(() => [...document.querySelectorAll('#dialogBody .cm-number')].some(element => element.textContent === '99'));
+      await page.keyboard.press('ControlOrMeta+Z');
+      assert.notEqual(await editor.evaluate(element => element.CodeMirror.getValue()), 'const changed = 99;\n  return "Updated";');
+      await page.keyboard.press('ControlOrMeta+Shift+Z');
+      const saved = await editor.evaluate(element => element.CodeMirror.getValue());
+      await page.keyboard.press('ControlOrMeta+Enter');
+      await dialogClosed();
+      await idle();
+      assert.equal(fs.readFileSync(path.join(root, '40-code/sample.js'), 'utf8'), saved);
+      assert.ok(fs.readdirSync(path.join(root, '40-code')).some(name => name.startsWith('sample.js.bak')));
+    });
+    await test('unmodified save and changed save preserve BOM and CRLF endings', async () => {
+      let editor = await openCode('windows.js', true);
+      await page.keyboard.press('ControlOrMeta+Enter');
+      await dialogClosed();
+      await idle();
+      assert.equal(fs.readFileSync(path.join(root, '40-code/windows.js'), 'utf8'), windowsCode);
+      editor = await openCode('windows.js', true);
+      await page.keyboard.press('ControlOrMeta+End');
+      await page.keyboard.type('// Added');
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('ControlOrMeta+Enter');
+      await dialogClosed();
+      await idle();
+      const saved = fs.readFileSync(path.join(root, '40-code/windows.js'), 'utf8');
+      assert.ok(saved.startsWith('\uFEFF'));
+      assert.ok(saved.endsWith('// Added\r\n'));
+      assert.equal(/(?<!\r)\n/.test(saved), false);
+    });
+    await test('empty source can be edited and Cancel leaves it empty', async () => {
+      const editor = await openCode('empty.py', true);
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), '');
+      await page.keyboard.type('print("Not saved")');
+      await closeCode();
+      assert.equal(fs.readFileSync(path.join(root, '40-code/empty.py'), 'utf8'), '');
+    });
+    await test('syntax colors adapt to light and dark themes', async () => {
+      const editor = await openCode('sample.py');
+      for (const theme of ['norton', 'paper']) {
+        await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+        const colors = await editor.evaluate(element => ({
+          text:getComputedStyle(element).color,
+          keyword:getComputedStyle(element.querySelector('.cm-keyword')).color,
+          background:getComputedStyle(element).backgroundColor
+        }));
+        assert.notEqual(colors.keyword, colors.text);
+        assert.notEqual(colors.keyword, colors.background);
+      }
+      await page.evaluate(() => { document.documentElement.dataset.theme = 'norton'; });
+      if (process.env.QA_SCREENSHOT) await page.screenshot({path:process.env.QA_SCREENSHOT.replace(/\.png$/, '-view.png')});
+      await closeCode();
+    });
+    await test('mobile syntax editor fits and wraps with keyboard editing intact', async () => {
+      await page.setViewportSize({width:390, height:844});
+      const editor = await openCode('sample.py', true);
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getOption('lineWrapping')), true);
+      const bounds = await editor.boundingBox();
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.type('print("Mobile")');
+      assert.equal(await editor.evaluate(element => element.CodeMirror.getValue()), 'print("Mobile")');
+      if (process.env.QA_SCREENSHOT) await page.screenshot({path:process.env.QA_SCREENSHOT.replace(/\.png$/, '-mobile-edit.png')});
+      await closeCode();
+      await page.setViewportSize({width:1280, height:720});
+    });
+    await test('all styles, icon glyphs, fonts and highlighting work without CDN requests', async () => {
+      await page.evaluate(() => document.fonts.load('900 16px "WebCommander Icons"'));
+      assert.equal(await page.evaluate(() => document.fonts.check('900 16px "WebCommander Icons"')), true);
+      assert.notEqual(await page.locator('[data-action=view] i').first().evaluate(element => getComputedStyle(element, '::before').content), 'none');
+      assert.deepEqual(externalRequests, []);
     });
     await test('no browser JavaScript errors occurred', async () => assert.deepEqual(errors, []));
     if (process.env.QA_SCREENSHOT) await page.screenshot({path:process.env.QA_SCREENSHOT});

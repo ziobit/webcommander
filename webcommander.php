@@ -9,7 +9,7 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.7'); // Increment this for every published update.
+define('MC_VERSION', '1.8'); // Increment this for every published update.
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
 define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
 define('MC_MAX_TREE_ITEMS', 200000);
@@ -371,7 +371,11 @@ function mc_existing_path(string $rel, bool $follow = true): string {
   if ($rel === '') {
     return MC_ROOT_REAL;
   }
-  if (!file_exists($raw) && !is_link($raw)) {
+  $parent = realpath(dirname($raw));
+  if ($parent === false || !mc_is_within_root($parent)) {
+    throw new RuntimeException('The parent directory is outside the allowed root.');
+  }
+  if (!is_link($raw) && !file_exists($raw)) {
     throw new RuntimeException('Path not found: ' . $rel);
   }
   if ($follow) {
@@ -380,10 +384,6 @@ function mc_existing_path(string $rel, bool $follow = true): string {
       throw new RuntimeException('The path resolves outside the allowed root.');
     }
     return $real;
-  }
-  $parent = realpath(dirname($raw));
-  if ($parent === false || !mc_is_within_root($parent)) {
-    throw new RuntimeException('The parent directory is outside the allowed root.');
   }
   return $raw;
 }
@@ -444,7 +444,7 @@ function mc_is_protected(string $path, bool $includeChildren = false): bool {
     if ($path === $protected) {
       return true;
     }
-    if ($includeChildren && is_dir($path) && strpos($protected, $path . DIRECTORY_SEPARATOR) === 0) {
+    if ($includeChildren && !is_link($path) && is_dir($path) && strpos($protected, $path . DIRECTORY_SEPARATOR) === 0) {
       return true;
     }
   }
@@ -545,6 +545,9 @@ function mc_ownership_value(string $value) {
 }
 
 function mc_mime(string $path): string {
+  if (is_link($path)) {
+    return 'inode/symlink';
+  }
   if (is_dir($path)) {
     return 'inode/directory';
   }
@@ -568,18 +571,20 @@ function mc_item_info(string $path, string $name): array {
   }
   $type = mc_file_type($path);
   $target = null;
+  $accessPath = $path;
   $navigable = $type === 'dir';
   if ($type === 'link') {
     $target = readlink($path);
     $real = realpath($path);
-    $navigable = $real !== false && mc_is_within_root($real) && is_dir($real);
+    $accessPath = $real !== false && mc_is_within_root($real) ? $real : null;
+    $navigable = $accessPath !== null && is_dir($accessPath);
   }
   return [
     'name' => $name,
     'path' => mc_rel_from_path($path),
     'type' => $type,
     'navigable' => $navigable,
-    'size' => $type === 'file' ? (int)$lstat['size'] : null,
+    'size' => ($type === 'file' || $type === 'link') ? (int)$lstat['size'] : null,
     'mtime' => (int)$lstat['mtime'],
     'ctime' => (int)$lstat['ctime'],
     'mode' => substr(sprintf('%o', (int)$lstat['mode']), -4),
@@ -588,8 +593,8 @@ function mc_item_info(string $path, string $name): array {
     'group' => mc_group_name((int)$lstat['gid']),
     'uid' => (int)$lstat['uid'],
     'gid' => (int)$lstat['gid'],
-    'readable' => is_readable($path),
-    'writable' => is_writable($path),
+    'readable' => $accessPath !== null && is_readable($accessPath),
+    'writable' => $accessPath !== null && is_writable($accessPath),
     'protected' => mc_is_protected($path, true),
     'linkTarget' => $target
   ];
@@ -809,7 +814,7 @@ function mc_walk(string $path, bool $includeRoot = true): Generator {
   if ($includeRoot && $path !== MC_CONFIG_FILE) {
     yield $path;
   }
-  if (is_dir($path) && !is_link($path)) {
+  if (!is_link($path) && is_dir($path)) {
     $names = scandir($path);
     if ($names === false) {
       return;
@@ -823,7 +828,7 @@ function mc_walk(string $path, bool $includeRoot = true): Generator {
         continue;
       }
       yield $child;
-      if (is_dir($child) && !is_link($child)) {
+      if (!is_link($child) && is_dir($child)) {
         yield from mc_walk($child, false);
       }
     }
@@ -834,7 +839,7 @@ function mc_directory_size(string $path, int &$items): int {
   $total = 0;
   foreach (mc_walk($path) as $node) {
     $items++;
-    if (is_file($node) && !is_link($node)) {
+    if (!is_link($node) && is_file($node)) {
       $size = filesize($node);
       if ($size !== false) {
         $total += $size;
@@ -910,7 +915,7 @@ function mc_directory_tree_node(
     }
 
     $childRel = $rel === '' ? $entry : $rel . '/' . $entry;
-    if (is_dir($child) && !is_link($child)) {
+    if (!is_link($child) && is_dir($child)) {
       $childNode = mc_directory_tree_node(
         $child,
         $childRel,
@@ -930,7 +935,7 @@ function mc_directory_tree_node(
 
     $fileCount++;
     $node['files']++;
-    if (is_file($child) && !is_link($child)) {
+    if (!is_link($child) && is_file($child)) {
       $size = filesize($child);
       if ($size === false) {
         $unreadableCount++;
@@ -1393,7 +1398,7 @@ function mc_search(string $baseRel, array $options): array {
     $snippet = '';
     if ($content !== '') {
       $contentMatch = false;
-      if (is_file($node) && !is_link($node)) {
+      if (!is_link($node) && is_file($node)) {
         $size = filesize($node);
         if ($size !== false && $size <= 2 * 1024 * 1024) {
           $text = file_get_contents($node);
@@ -1427,9 +1432,9 @@ function mc_directory_map(string $base, string $mode): array {
       throw new RuntimeException('Directory comparison is limited to 20,000 items.');
     }
     $key = str_replace(DIRECTORY_SEPARATOR, '/', substr($node, strlen($base) + 1));
-    if (is_dir($node) && !is_link($node)) {
+    if (!is_link($node) && is_dir($node)) {
       $map[$key] = ['type' => 'dir'];
-    } elseif (is_file($node) && !is_link($node)) {
+    } elseif (!is_link($node) && is_file($node)) {
       $size = filesize($node);
       $mtime = filemtime($node);
       $value = ['type' => 'file', 'size' => $size === false ? 0 : $size, 'mtime' => $mtime === false ? 0 : $mtime];
@@ -1477,7 +1482,7 @@ function mc_compare_directories(string $leftRel, string $rightRel, string $mode)
 
 function mc_apply_recursive(string $path, bool $recursive, callable $callback): int {
   $count = 0;
-  if ($recursive && is_dir($path) && !is_link($path)) {
+  if ($recursive && !is_link($path) && is_dir($path)) {
     foreach (mc_walk($path) as $node) {
       $callback($node);
       $count++;
@@ -1855,7 +1860,8 @@ if ($authenticated && $action !== '') {
         throw new RuntimeException('Invalid date/time.');
       }
       foreach ($paths as $rel) {
-        $path = mc_existing_path((string)$rel, false);
+        // touch() follows links; use only a canonical target inside MC_ROOT.
+        $path = mc_existing_path((string)$rel);
         if (mc_is_protected($path, true)) {
           throw new RuntimeException('A protected application file cannot be changed.');
         }
@@ -1895,11 +1901,11 @@ if ($authenticated && $action !== '') {
         $path = mc_existing_path((string)$rel, false);
         $info = mc_item_info($path, basename($path));
         $items = 0;
-        $size = is_dir($path) && !is_link($path) ? mc_directory_size($path, $items) : ((is_file($path) && filesize($path) !== false) ? (int)filesize($path) : 0);
+        $size = $info['type'] === 'dir' ? mc_directory_size($path, $items) : (int)($info['size'] ?? 0);
         if ($items === 0) $items = 1;
         $info['calculatedSize'] = $size;
         $info['itemCount'] = $items;
-        $info['mime'] = is_file($path) ? mc_mime($path) : $info['type'];
+        $info['mime'] = $info['type'] === 'file' ? mc_mime($path) : ($info['type'] === 'link' ? 'inode/symlink' : $info['type']);
         $details[] = $info;
         $totalSize += $size;
         $totalItems += $items;

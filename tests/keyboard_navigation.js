@@ -389,8 +389,14 @@ async function main() {
     };
     await test('embedded highlighter and UI versions are recorded and load offline', async () => {
       assert.equal(await page.evaluate(() => CodeMirror.version), '5.65.21');
-      assert.equal(await page.locator('link[rel=stylesheet]').count(), 0);
-      assert.equal(await page.locator('script[src]').count(), 0);
+      assert.equal(await page.locator('link[rel=stylesheet]').count(), 3);
+      assert.equal(await page.locator('script[src]').count(), 3);
+      assert.ok(await page.locator('link[rel=stylesheet], script[src]').evaluateAll(elements =>
+        elements.every(element => {
+          const url = new URL(element.href || element.src);
+          return url.origin === location.origin && url.searchParams.has('wc_asset') &&
+            /^[a-f0-9]{64}$/.test(url.searchParams.get('v'));
+        })));
       const source = fs.readFileSync(path.join(root, 'webcommander.php'), 'utf8');
       for (const line of ["MC_CODEMIRROR_VERSION', '5.65.21'", "MC_BOOTSTRAP_VERSION', '5.3.3'", "MC_FONT_AWESOME_VERSION', '6.5.2'"]) assert.ok(source.includes(line));
       assert.ok(source.includes('Permission is hereby granted'));

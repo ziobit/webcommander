@@ -1,0 +1,10 @@
+:root { color-scheme: dark; }
+body { min-height: 100vh; background: #000080; color: #f5f5f5; font-family: "Lucida Console", "Courier New", ui-monospace, monospace; }
+.login-card { width: min(440px, calc(100vw - 2rem)); background: #0000aa; border: 2px solid #55ffff; border-radius: 0 !important; box-shadow: 14px 14px 0 rgba(0, 0, 32, .55); }
+.brand-icon { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 0; color: #000080; background: #ffff55; font-size: 1.65rem; }
+.form-control { border-radius: 0; background: #00006f; border-color: #00a7b3; color: #fff; }
+.form-control:focus { background: #00006f; color: #fff; border-color: #55ffff; box-shadow: 0 0 0 .2rem rgba(85, 255, 255, .22); }
+.form-control::placeholder { color: #b8d6d6; }
+.btn-primary { border-radius: 0; color: #000; background: #00aaaa; border-color: #55ffff; font-weight: 700; }
+.btn-primary:hover, .btn-primary:focus { color: #000; background: #55ffff; border-color: #ffff55; }
+.text-secondary { color: #c7e5e5 !important; }

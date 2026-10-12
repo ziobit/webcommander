@@ -9,12 +9,12 @@ declare(strict_types=1);
  */
 
 define('MC_ROOT', __DIR__);
-define('MC_VERSION', '1.10'); // Increment this for every published update.
+define('MC_VERSION', '1.11'); // Increment this for every published update.
 define('MC_CODEMIRROR_VERSION', '5.65.21'); // Embedded core, CSS, modes and addons; see the asset manifest below.
 define('MC_BOOTSTRAP_VERSION', '5.3.3');
 define('MC_FONT_AWESOME_VERSION', '6.5.2');
 define('MC_UPDATE_URL', 'https://raw.githubusercontent.com/ziobit/webcommander/main/webcommander.php');
-define('MC_UPDATE_MAX_BYTES', 2 * 1024 * 1024);
+define('MC_UPDATE_MAX_BYTES', 16 * 1024 * 1024); // Bound both download transports before buffering/parsing.
 define('MC_MAX_TREE_ITEMS', 200000);
 define('MC_MAX_TREE_FOLDERS', 10000);
 define('MC_MAX_TREE_DEPTH', 64);
@@ -53,6 +53,7 @@ if ($rootReal === false || !is_dir($rootReal)) {
 }
 define('MC_ROOT_REAL', rtrim($rootReal, DIRECTORY_SEPARATOR));
 define('MC_CONFIG_FILE', __DIR__ . DIRECTORY_SEPARATOR . '.webcommander-' . substr(hash('sha256', __FILE__), 0, 12) . '.php');
+define('MC_UPDATE_LOCK_FILE', MC_CONFIG_FILE . '.update-lock');
 
 /*
  * Embedded asset manifest. Update the version constants and this manifest
@@ -2205,67 +2206,201 @@ function mc_require_csrf(array $data): void {
   }
 }
 
-function mc_update_download(): string {
-  $url = MC_UPDATE_URL . '?cache=' . rawurlencode((string)time());
-  $body = false;
-  $status = 0;
-
-  if (function_exists('curl_init')) {
-    $curl = curl_init($url);
-    if ($curl === false) {
-      throw new RuntimeException('Cannot initialize the update connection.');
+function mc_update_response_header(string $header, array &$response): void {
+  $header = trim($header);
+  if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/i', $header, $matches)) {
+    $response = ['status' => (int)$matches[1], 'length' => null, 'encoding' => '', 'transfer' => ''];
+  } elseif (stripos($header, 'Content-Length:') === 0) {
+    $length = trim(substr($header, 15));
+    if (!preg_match('/^[0-9]+$/D', $length)) {
+      throw new RuntimeException('The update server returned an invalid download length.');
     }
-    curl_setopt_array($curl, [
-      CURLOPT_RETURNTRANSFER => true,
-      CURLOPT_CONNECTTIMEOUT => 8,
-      CURLOPT_TIMEOUT => 20,
-      CURLOPT_USERAGENT => 'WebCommander/' . MC_VERSION,
-      CURLOPT_HTTPHEADER => ['Accept: text/plain', 'Cache-Control: no-cache']
-    ]);
-    $body = curl_exec($curl);
-    $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
-    $error = curl_error($curl);
-    curl_close($curl);
-    if ($body === false) {
-      throw new RuntimeException('Cannot download the update' . ($error !== '' ? ': ' . $error : '.'));
+    if ((float)$length > MC_UPDATE_MAX_BYTES) {
+      throw new RuntimeException('The update file exceeds the allowed size (16 MiB).');
     }
-  } else {
-    $context = stream_context_create([
-      'http' => [
-        'method' => 'GET',
-        'timeout' => 20,
-        'ignore_errors' => true,
-        'header' => "User-Agent: WebCommander/" . MC_VERSION . "\r\nAccept: text/plain\r\nCache-Control: no-cache\r\n"
-      ],
-      'ssl' => [
-        'verify_peer' => true,
-        'verify_peer_name' => true
-      ]
-    ]);
-    $body = @file_get_contents($url, false, $context, 0, MC_UPDATE_MAX_BYTES + 1);
-    foreach (($http_response_header ?? []) as $header) {
-      if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/i', $header, $matches)) {
-        $status = (int)$matches[1];
-      }
+    if ($response['length'] !== null && $response['length'] !== (int)$length) {
+      throw new RuntimeException('The update server returned conflicting download lengths.');
     }
-    if ($body === false) {
-      throw new RuntimeException('Cannot download the update. Enable cURL or allow_url_fopen and permit outbound HTTPS.');
-    }
+    $response['length'] = (int)$length;
+  } elseif (stripos($header, 'Content-Encoding:') === 0) {
+    $response['encoding'] = strtolower(trim(substr($header, 17)));
+  } elseif (stripos($header, 'Transfer-Encoding:') === 0) {
+    $response['transfer'] = strtolower(trim(substr($header, 18)));
   }
-
-  if ($status < 200 || $status >= 300) {
-    throw new RuntimeException('The update server returned HTTP ' . $status . '.');
-  }
-  if (!is_string($body) || $body === '') {
-    throw new RuntimeException('The update server returned an empty file.');
-  }
-  if (strlen($body) > MC_UPDATE_MAX_BYTES) {
-    throw new RuntimeException('The update file exceeds the allowed size.');
-  }
-  return $body;
 }
 
-function mc_update_source_info(string $source): array {
+function mc_update_response_check(array $response): void {
+  if ($response['status'] !== 200) {
+    throw new RuntimeException('The update server returned HTTP ' . $response['status'] . '.');
+  }
+  if (!in_array($response['encoding'], ['', 'identity'], true) ||
+      !in_array($response['transfer'], ['', 'chunked'], true) ||
+      ($response['transfer'] !== '' && $response['length'] !== null)) {
+    throw new RuntimeException('The update server returned an unsupported or ambiguous download encoding.');
+  }
+}
+
+/** Write a bounded chunk to a disk stream, including short-write handling. */
+function mc_update_write($file, string $chunk, int &$bytes): void {
+  $length = strlen($chunk);
+  if ($length > MC_UPDATE_MAX_BYTES - $bytes) {
+    throw new RuntimeException('The update file exceeds the allowed size (16 MiB).');
+  }
+  $offset = 0;
+  while ($offset < $length) {
+    $written = @fwrite($file, $offset === 0 ? $chunk : substr($chunk, $offset));
+    if ($written === false || $written === 0) {
+      throw new RuntimeException('Cannot write the temporary update file. Check available disk space.');
+    }
+    $offset += $written;
+  }
+  $bytes += $length;
+}
+
+/** Returns an automatically removed disk-backed stream; the caller must fclose it. */
+function mc_update_download() {
+  if (parse_url(MC_UPDATE_URL, PHP_URL_SCHEME) !== 'https') {
+    throw new RuntimeException('The update source must use HTTPS.');
+  }
+  $url = MC_UPDATE_URL . '?cache=' . rawurlencode((string)time());
+  $file = @tmpfile();
+  if ($file === false) {
+    throw new RuntimeException('Cannot create a temporary download file.');
+  }
+  $response = ['status' => 0, 'length' => null, 'encoding' => '', 'transfer' => ''];
+  $bytes = 0;
+  try {
+    if (function_exists('curl_init')) {
+      $curl = curl_init($url);
+      if ($curl === false) {
+        throw new RuntimeException('Cannot initialize the update connection.');
+      }
+      $callbackError = null;
+      try {
+        if (!curl_setopt_array($curl, [
+          CURLOPT_CONNECTTIMEOUT => 8,
+          CURLOPT_TIMEOUT => 120,
+          CURLOPT_FOLLOWLOCATION => false,
+          CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+          CURLOPT_SSL_VERIFYPEER => true,
+          CURLOPT_SSL_VERIFYHOST => 2,
+          CURLOPT_USERAGENT => 'WebCommander/' . MC_VERSION,
+          CURLOPT_HTTPHEADER => ['Accept: text/plain', 'Accept-Encoding: identity', 'Cache-Control: no-cache'],
+          CURLOPT_HEADERFUNCTION => function ($connection, string $header) use (&$response, &$callbackError): int {
+            try {
+              mc_update_response_header($header, $response);
+              return strlen($header);
+            } catch (Throwable $e) {
+              $callbackError = $e;
+              return 0;
+            }
+          },
+          CURLOPT_WRITEFUNCTION => function ($connection, string $chunk) use ($file, &$bytes, &$response, &$callbackError): int {
+            try {
+              mc_update_response_check($response);
+              mc_update_write($file, $chunk, $bytes);
+              return strlen($chunk);
+            } catch (Throwable $e) {
+              $callbackError = $e;
+              return 0;
+            }
+          }
+        ])) {
+          throw new RuntimeException('Cannot configure a secure update connection.');
+        }
+        $completed = curl_exec($curl);
+        if ($callbackError !== null) {
+          throw $callbackError;
+        }
+        if ($completed === false) {
+          throw new RuntimeException('Cannot download the complete update: ' . curl_error($curl));
+        }
+      } finally {
+        curl_close($curl);
+      }
+    } else {
+      $context = stream_context_create([
+        'http' => [
+          'method' => 'GET',
+          'timeout' => 20,
+          'ignore_errors' => true,
+          'follow_location' => 0,
+          'max_redirects' => 0,
+          'header' => "User-Agent: WebCommander/" . MC_VERSION . "\r\nAccept: text/plain\r\nAccept-Encoding: identity\r\nCache-Control: no-cache\r\n"
+        ],
+        'ssl' => ['verify_peer' => true, 'verify_peer_name' => true]
+      ]);
+      $connection = @fopen($url, 'rb', false, $context);
+      if ($connection === false) {
+        throw new RuntimeException('Cannot download the update. Enable cURL or allow_url_fopen and permit outbound HTTPS.');
+      }
+      try {
+        $metadata = stream_get_meta_data($connection);
+        foreach (($metadata['wrapper_data'] ?? []) as $header) {
+          mc_update_response_header($header, $response);
+        }
+        mc_update_response_check($response);
+        $deadline = microtime(true) + 120;
+        while (!feof($connection)) {
+          $remaining = $deadline - microtime(true);
+          if ($remaining <= 0) {
+            throw new RuntimeException('The update download timed out.');
+          }
+          stream_set_timeout($connection, max(1, (int)min(20, $remaining)));
+          $chunk = @fread($connection, 64 * 1024);
+          $metadata = stream_get_meta_data($connection);
+          if ($chunk === false || !empty($metadata['timed_out']) || ($chunk === '' && !feof($connection))) {
+            throw new RuntimeException('The update download was interrupted or timed out.');
+          }
+          mc_update_write($file, $chunk, $bytes);
+        }
+      } finally {
+        fclose($connection);
+      }
+    }
+    mc_update_response_check($response);
+    if ($bytes === 0) {
+      throw new RuntimeException('The update server returned an empty file.');
+    }
+    if ($response['length'] !== null && $bytes !== $response['length']) {
+      throw new RuntimeException('The update download is truncated or its length is incorrect.');
+    }
+    if (!fflush($file) || !rewind($file)) {
+      throw new RuntimeException('Cannot finish the temporary download file.');
+    }
+    return $file;
+  } catch (Throwable $e) {
+    fclose($file);
+    throw $e;
+  }
+}
+
+function mc_update_memory_check(int $bytes): void {
+  $limit = trim((string)ini_get('memory_limit'));
+  if ($limit === '-1') {
+    return;
+  }
+  $units = ['k' => 1024, 'm' => 1024 * 1024, 'g' => 1024 * 1024 * 1024];
+  $available = (float)$limit * ($units[strtolower(substr($limit, -1))] ?? 1) - memory_get_usage(true);
+  // The source and PHP tokenizer still need memory. Leave headroom for tokens,
+  // parsing and a JSON error; never raise the server's configured memory limit.
+  if ($available < $bytes * 8 + 32 * 1024 * 1024) {
+    throw new RuntimeException('Insufficient PHP memory for update syntax validation. Increase memory_limit or update manually.');
+  }
+}
+
+function mc_update_source_info($file): array {
+  $stat = fstat($file);
+  $bytes = $stat === false ? 0 : (int)$stat['size'];
+  if ($bytes === 0 || $bytes > MC_UPDATE_MAX_BYTES) {
+    throw new RuntimeException('The downloaded update has an invalid size.');
+  }
+  mc_update_memory_check($bytes);
+  rewind($file);
+  $source = stream_get_contents($file, MC_UPDATE_MAX_BYTES + 1);
+  if ($source === false || strlen($source) !== $bytes) {
+    throw new RuntimeException('Cannot read the complete update for validation.');
+  }
   if (strncmp($source, '<?php', 5) !== 0 || strpos($source, 'WebCommander - single-file') === false) {
     throw new RuntimeException('The downloaded file is not a valid WebCommander source file.');
   }
@@ -2273,10 +2408,47 @@ function mc_update_source_info(string $source): array {
   if (!preg_match($pattern, $source, $matches)) {
     throw new RuntimeException('The downloaded source does not contain a valid version.');
   }
+  // Legacy releases predate the marker and cannot be installed over v1.11.
+  // New releases must retain this last line, including when served chunked or
+  // without Content-Length: PHP syntax alone cannot detect a missing HTML tail.
+  $end = "<!-- WebCommander update end -->\n";
+  if (version_compare($matches[1], '1.10', '>') && substr($source, -strlen($end)) !== $end) {
+    throw new RuntimeException('The update is incomplete: its end marker is missing.');
+  }
+  if (!function_exists('token_get_all')) {
+    throw new RuntimeException('The PHP tokenizer extension is required to validate updates.');
+  }
   try {
-    token_get_all($source, TOKEN_PARSE);
+    $tokens = token_get_all($source, TOKEN_PARSE);
   } catch (ParseError $e) {
     throw new RuntimeException('The downloaded update failed PHP syntax validation: ' . $e->getMessage());
+  }
+  // Confirm an actual literal define(), rather than accepting a version hidden
+  // in a comment or string. Never execute the downloaded source to inspect it.
+  $versions = [];
+  foreach ($tokens as $index => $token) {
+    if (!is_array($token) || $token[0] !== T_STRING || strcasecmp($token[1], 'define') !== 0) {
+      continue;
+    }
+    $arguments = [];
+    for ($next = $index + 1; $next < count($tokens) && count($arguments) < 6; $next++) {
+      $item = $tokens[$next];
+      if (is_array($item) && in_array($item[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+        continue;
+      }
+      $arguments[] = $item;
+    }
+    if (count($arguments) === 6 && $arguments[0] === '(' && $arguments[2] === ',' &&
+        $arguments[4] === ')' && $arguments[5] === ';' &&
+        is_array($arguments[1]) && $arguments[1][0] === T_CONSTANT_ENCAPSED_STRING &&
+        in_array($arguments[1][1], ["'MC_VERSION'", '"MC_VERSION"'], true) &&
+        is_array($arguments[3]) && $arguments[3][0] === T_CONSTANT_ENCAPSED_STRING) {
+      $versions[] = substr($arguments[3][1], 1, -1);
+    }
+  }
+  unset($tokens);
+  if (count($versions) !== 1 || !hash_equals($matches[1], $versions[0])) {
+    throw new RuntimeException('The downloaded source does not contain a unique literal version definition.');
   }
   return [
     'version' => $matches[1],
@@ -2289,77 +2461,167 @@ function mc_update_can_install(): bool {
   return is_file(__FILE__) && is_readable(__FILE__) && is_writable(dirname(__FILE__));
 }
 
-function mc_update_install(string $expectedVersion): array {
-  if (!preg_match('/^[0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z.-]+)?$/', $expectedVersion)) {
+/** Create exclusive, private staging/rollback files on the target filesystem. */
+function mc_update_temporary(string $directory): array {
+  $path = $directory . DIRECTORY_SEPARATOR . '.webcommander-update-' . bin2hex(random_bytes(16)) . '.tmp';
+  $file = @fopen($path, 'x+b');
+  if ($file === false) {
+    throw new RuntimeException('Cannot create a temporary update file in the application directory.');
+  }
+  if (!@chmod($path, 0600)) {
+    fclose($file);
+    @unlink($path);
+    throw new RuntimeException('Cannot secure the temporary update file.');
+  }
+  return [$path, $file];
+}
+
+function mc_update_install(string $expectedVersion, string $expectedHash): array {
+  if (!preg_match('/^[0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z.-]+)?$/D', $expectedVersion)) {
     throw new RuntimeException('Invalid expected update version.');
   }
   if (!mc_update_can_install()) {
     throw new RuntimeException('The directory containing WebCommander is not writable by PHP.');
   }
-
-  $source = mc_update_download();
-  $info = mc_update_source_info($source);
-  if (!hash_equals($expectedVersion, (string)$info['version'])) {
-    throw new RuntimeException('The available version changed. Check for updates again.');
+  if (!preg_match('/^[a-f0-9]{64}$/D', $expectedHash)) {
+    throw new RuntimeException('Invalid expected update checksum. Check for updates again.');
   }
-  if (!version_compare((string)$info['version'], MC_VERSION, '>')) {
-    throw new RuntimeException('No newer version is available.');
+  clearstatcache(true, MC_UPDATE_LOCK_FILE);
+  $lockStat = @lstat(MC_UPDATE_LOCK_FILE);
+  if ($lockStat !== false && ($lockStat['mode'] & 0170000) !== 0100000) {
+    throw new RuntimeException('Cannot open a safe update lock file.');
   }
-
+  $lock = @fopen(MC_UPDATE_LOCK_FILE, 'x+b');
+  if ($lock === false) {
+    $lock = @fopen(MC_UPDATE_LOCK_FILE, 'r+b');
+  }
+  clearstatcache(true, MC_UPDATE_LOCK_FILE);
+  $lockStat = @lstat(MC_UPDATE_LOCK_FILE);
+  $openedStat = $lock === false ? false : fstat($lock);
+  if ($lock === false || $lockStat === false || $openedStat === false ||
+      ($lockStat['mode'] & 0170000) !== 0100000 ||
+      $lockStat['dev'] !== $openedStat['dev'] || $lockStat['ino'] !== $openedStat['ino']) {
+    if (is_resource($lock)) fclose($lock);
+    throw new RuntimeException('Cannot open a safe update lock file.');
+  }
+  if (!flock($lock, LOCK_EX | LOCK_NB)) {
+    fclose($lock);
+    throw new RuntimeException('Another update is already in progress. Try again later.');
+  }
   $target = __FILE__;
   $directory = dirname($target);
-  $previous = file_get_contents($target);
-  if ($previous === false) {
-    throw new RuntimeException('Cannot read the current WebCommander source before updating.');
-  }
-
-  $temporary = $directory . DIRECTORY_SEPARATOR . '.webcommander-update-' . bin2hex(random_bytes(8)) . '.tmp';
+  $temporary = null;
+  $backup = null;
+  $keepBackup = false;
+  $download = null;
   try {
-    $written = file_put_contents($temporary, $source, LOCK_EX);
-    if ($written === false || $written !== strlen($source)) {
-      throw new RuntimeException('Cannot write the temporary update file.');
+    $currentFile = @fopen($target, 'rb');
+    $header = $currentFile === false ? '' : (string)fread($currentFile, 8192);
+    if (is_resource($currentFile)) fclose($currentFile);
+    if (!preg_match('/^define\(\s*[\'"]MC_VERSION[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]\s*\)\s*;/m', $header, $currentVersion) ||
+        !hash_equals(MC_VERSION, $currentVersion[1])) {
+      throw new RuntimeException('WebCommander changed since this request started. Reload before updating.');
     }
-
-    $permissions = fileperms($target);
-    if ($permissions !== false) {
-      @chmod($temporary, $permissions & 0777);
+    $previousHash = @hash_file('sha256', $target);
+    if ($previousHash === false) {
+      throw new RuntimeException('Cannot read the current source before updating.');
     }
-
-    $installed = mc_try_fs(function () use ($temporary, $target): bool {
-      return rename($temporary, $target);
-    });
-
-    if (!$installed) {
-      $written = file_put_contents($target, $source, LOCK_EX);
-      @unlink($temporary);
-      if ($written === false || $written !== strlen($source)) {
-        @file_put_contents($target, $previous, LOCK_EX);
-        throw new RuntimeException('Cannot replace the current WebCommander source.');
+    $download = mc_update_download();
+    $info = mc_update_source_info($download);
+    if (!hash_equals($expectedVersion, (string)$info['version']) || !hash_equals($expectedHash, (string)$info['sha256'])) {
+      throw new RuntimeException('The available update changed. Check for updates again.');
+    }
+    if (!version_compare((string)$info['version'], MC_VERSION, '>')) {
+      throw new RuntimeException('No newer version is available.');
+    }
+    [$temporary, $stage] = mc_update_temporary($directory);
+    try {
+      rewind($download);
+      $written = stream_copy_to_stream($download, $stage);
+      if ($written !== $info['bytes'] || !fflush($stage)) {
+        throw new RuntimeException('Cannot write the complete staged update.');
       }
+    } finally {
+      fclose($stage);
     }
-
+    if (!hash_equals($info['sha256'], (string)@hash_file('sha256', $temporary))) {
+      throw new RuntimeException('The staged update failed checksum verification.');
+    }
+    $permissions = @fileperms($target);
+    if ($permissions === false) {
+      throw new RuntimeException('Cannot read the current source before updating.');
+    }
+    [$backup, $previousFile] = mc_update_temporary($directory);
+    $currentFile = @fopen($target, 'rb');
+    try {
+      if ($currentFile === false || stream_copy_to_stream($currentFile, $previousFile) === false || !fflush($previousFile)) {
+        throw new RuntimeException('Cannot create the update rollback file.');
+      }
+    } finally {
+      if (is_resource($currentFile)) fclose($currentFile);
+      fclose($previousFile);
+    }
+    if (!hash_equals($previousHash, (string)@hash_file('sha256', $backup)) ||
+        !hash_equals($previousHash, (string)@hash_file('sha256', $target))) {
+      throw new RuntimeException('The current source changed while preparing the update. Retry after reloading.');
+    }
+    if (!@chmod($temporary, $permissions & 0777)) {
+      throw new RuntimeException('Cannot preserve the current source permissions.');
+    }
+    // Never truncate/overwrite the live PHP file, including when rename fails.
+    if (!@rename($temporary, $target)) {
+      throw new RuntimeException('Cannot atomically replace the current source. The current file was left unchanged.');
+    }
+    $temporary = null;
+    // Retain the verified old bytes if execution stops after replacement.
+    $keepBackup = true;
     clearstatcache(true, $target);
-    $installedHash = hash_file('sha256', $target);
+    $installedHash = @hash_file('sha256', $target);
     if ($installedHash === false || !hash_equals((string)$info['sha256'], $installedHash)) {
-      @file_put_contents($target, $previous, LOCK_EX);
-      throw new RuntimeException('Update verification failed; the previous source was restored.');
+      $restored = false;
+      try {
+        [$temporary, $restoreFile] = mc_update_temporary($directory);
+        $previousFile = @fopen($backup, 'rb');
+        try {
+          $copied = $previousFile !== false && stream_copy_to_stream($previousFile, $restoreFile) !== false && fflush($restoreFile);
+        } finally {
+          if (is_resource($previousFile)) fclose($previousFile);
+          fclose($restoreFile);
+        }
+        $restored = $copied && hash_equals($previousHash, (string)@hash_file('sha256', $temporary)) &&
+          @chmod($temporary, $permissions & 0777) && @rename($temporary, $target);
+      } catch (Throwable $e) {
+        // The verified rollback file is kept even if preparing recovery fails.
+      }
+      clearstatcache(true, $target);
+      if ($restored && hash_equals($previousHash, (string)@hash_file('sha256', $target))) {
+        $temporary = null;
+        $keepBackup = false;
+        if (function_exists('opcache_invalidate')) @opcache_invalidate($target, true);
+        throw new RuntimeException('Update verification failed; the previous source was restored and verified.');
+      }
+      throw new RuntimeException('Update verification failed and automatic recovery failed. Restore the verified rollback file manually: ' . $backup);
     }
-  } catch (Throwable $e) {
-    if (is_file($temporary)) {
+    $keepBackup = false;
+    if (function_exists('opcache_invalidate')) {
+      @opcache_invalidate($target, true);
+    }
+    return [
+      'previousVersion' => MC_VERSION,
+      'version' => $info['version'],
+      'sha256' => $info['sha256']
+    ];
+  } finally {
+    if (is_resource($download)) fclose($download);
+    if ($temporary !== null) {
       @unlink($temporary);
     }
-    throw $e;
+    if ($backup !== null && !$keepBackup) {
+      @unlink($backup);
+    }
+    flock($lock, LOCK_UN);
+    fclose($lock);
   }
-
-  if (function_exists('opcache_invalidate')) {
-    @opcache_invalidate($target, true);
-  }
-
-  return [
-    'previousVersion' => MC_VERSION,
-    'version' => $info['version'],
-    'sha256' => $info['sha256']
-  ];
 }
 
 function mc_normalize_rel(string $path): string {
@@ -2470,6 +2732,7 @@ function mc_protected_paths(): array {
     $paths[] = $script;
   }
   $paths[] = MC_CONFIG_FILE;
+  $paths[] = MC_UPDATE_LOCK_FILE;
   return $paths;
 }
 
@@ -4050,8 +4313,12 @@ if ($authenticated && $action !== '') {
     }
 
     if ($action === 'update_check') {
-      $source = mc_update_download();
-      $info = mc_update_source_info($source);
+      $download = mc_update_download();
+      try {
+        $info = mc_update_source_info($download);
+      } finally {
+        fclose($download);
+      }
       mc_ok([
         'currentVersion' => MC_VERSION,
         'latestVersion' => $info['version'],
@@ -4062,7 +4329,7 @@ if ($authenticated && $action !== '') {
     }
 
     if ($action === 'update_install') {
-      mc_ok(mc_update_install((string)($data['expected_version'] ?? '')));
+      mc_ok(mc_update_install((string)($data['expected_version'] ?? ''), (string)($data['expected_sha256'] ?? '')));
     }
 
     if ($action === 'change_password') {
@@ -6405,7 +6672,7 @@ async function actionUpdate() {
   ], {submitLabel:'Update to v' + check.latestVersion});
   if (!confirmed) return;
 
-  const result = await api('update_install', {expected_version:check.latestVersion});
+  const result = await api('update_install', {expected_version:check.latestVersion, expected_sha256:check.sha256});
   showContent('Update installed', '<div class="text-center py-3"><i class="fa-solid fa-circle-check fa-2x mb-3" style="color:var(--wc-success)"></i><div><strong>Updated to v' + escapeHtml(result.version) + '.</strong></div><div class="wc-result-note mt-2">Reloading WebCommander…</div></div>', {wide:false});
   setTimeout(() => location.reload(), 1200);
 }
@@ -6503,3 +6770,4 @@ Promise.all([WC.panes.left.load(''), WC.panes.right.load('')]).then(() => WC.pan
 </script>
 </body>
 </html>
+<!-- WebCommander update end -->

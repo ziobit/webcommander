@@ -1405,7 +1405,7 @@ function mc_asset_serve(): void {
   }
   $asset = $assets[$name];
   $encodings = mc_asset_encodings();
-  $gzip = $asset['gzip'] && $encodings['gzip'] > 0;
+  $gzip = $asset['gzip'] && $encodings['gzip'] > 0 && $encodings['gzip'] >= $encodings['identity'];
   if (!$gzip && $encodings['identity'] <= 0) {
     mc_asset_fail(406, 'No acceptable asset encoding.');
   }
@@ -1794,6 +1794,127 @@ function mc_update_memory_check(int $bytes): void {
   }
 }
 
+// Read only the builder's literal manifest grammar. Never eval downloaded PHP.
+function mc_update_pack_literal(array $tokens, int &$at, int $depth = 0) {
+  if ($depth > 3 || !isset($tokens[$at])) {
+    throw new RuntimeException('Invalid packed asset manifest.');
+  }
+  $token = $tokens[$at++];
+  if ($token === '[') {
+    $value = [];
+    while (($tokens[$at] ?? null) !== ']') {
+      $key = mc_update_pack_literal($tokens, $at, $depth + 1);
+      if (!is_string($key) || array_key_exists($key, $value) || ($tokens[$at++] ?? null) !== '=>') {
+        throw new RuntimeException('Invalid packed asset manifest keys.');
+      }
+      $value[$key] = mc_update_pack_literal($tokens, $at, $depth + 1);
+      if (count($value) > 256 || ($tokens[$at++] ?? null) !== ',') {
+        throw new RuntimeException('Invalid packed asset manifest entries.');
+      }
+    }
+    $at++;
+    return $value;
+  }
+  if (is_string($token) && preg_match("/^'[^'\\\\]*'$/D", $token)) {
+    return substr($token, 1, -1);
+  }
+  if ($token === 'true' || $token === 'false') {
+    return $token === 'true';
+  }
+  if (is_string($token) && preg_match('/^(0|[1-9][0-9]{0,8})$/D', $token)) {
+    return (int)$token;
+  }
+  throw new RuntimeException('Invalid packed asset manifest literal.');
+}
+
+function mc_update_validate_pack(string $source, array $tokens): void {
+  $code = [];
+  $position = 0;
+  $halt = null;
+  $manifest = null;
+  foreach ($tokens as $token) {
+    $text = is_array($token) ? $token[1] : $token;
+    $position += strlen($text);
+    if (is_array($token) && $token[0] === T_HALT_COMPILER) {
+      $halt = $position;
+    }
+    if ($halt !== null && $text === ';') {
+      $halt = $position;
+      break;
+    }
+    if (!is_array($token) || !in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT, T_INLINE_HTML], true)) {
+      $code[] = $text;
+    }
+  }
+  if ($halt === null) {
+    if (in_array('mc_asset_manifest', $code, true)) {
+      throw new RuntimeException('The packed asset boundary is missing.');
+    }
+    return; // Legacy, unpacked single-file releases.
+  }
+  foreach ($code as $at => $token) {
+    if ($token !== 'function' || ($code[$at + 1] ?? null) !== 'mc_asset_manifest') {
+      continue;
+    }
+    if ($manifest !== null || array_slice($code, $at + 2, 9) !== ['(', ')', ':', 'array', '{', 'static', '$assets', '=', '[']) {
+      throw new RuntimeException('Invalid packed asset manifest declaration.');
+    }
+    $at += 10;
+    $manifest = mc_update_pack_literal($code, $at);
+    if (array_slice($code, $at, 5) !== [';', 'return', '$assets', ';', '}']) {
+      throw new RuntimeException('Invalid packed asset manifest body.');
+    }
+  }
+  if (!is_array($manifest) || !$manifest) {
+    throw new RuntimeException('The packed asset manifest is missing.');
+  }
+  $offset = 0;
+  $end = "<!-- WebCommander update end -->\n";
+  $payloadBytes = strlen($source) - $halt - strlen($end);
+  foreach ($manifest as $name => $asset) {
+    if (!preg_match('/^[a-z0-9-]+$/D', $name) || !is_array($asset) ||
+        !isset($asset['type'], $asset['offset'], $asset['length'], $asset['bytes'], $asset['sha256'], $asset['storedSha256'], $asset['gzip']) ||
+        !is_string($asset['type']) || !is_int($asset['offset']) || $asset['offset'] !== $offset ||
+        !is_int($asset['length']) || $asset['length'] <= 0 || $asset['length'] > $payloadBytes - $offset ||
+        !is_int($asset['bytes']) || $asset['bytes'] <= 0 || $asset['bytes'] > MC_UPDATE_MAX_BYTES ||
+        !is_bool($asset['gzip']) || !is_string($asset['sha256']) || !is_string($asset['storedSha256']) ||
+        !preg_match('/^[a-f0-9]{64}$/D', $asset['sha256']) || !preg_match('/^[a-f0-9]{64}$/D', $asset['storedSha256'])) {
+      throw new RuntimeException('Invalid packed asset metadata or bounds.');
+    }
+    $body = substr($source, $halt + $offset, $asset['length']);
+    if (!hash_equals($asset['storedSha256'], hash('sha256', $body))) {
+      throw new RuntimeException('The packed asset checksum is invalid.');
+    }
+    if ($asset['gzip']) {
+      if (!function_exists('gzdecode')) {
+        throw new RuntimeException('PHP zlib is required to validate packed assets.');
+      }
+      $compressed = $body;
+      $body = @gzdecode($compressed, $asset['bytes']);
+    }
+    if ($body === false || strlen($body) !== $asset['bytes'] || !hash_equals($asset['sha256'], hash('sha256', $body))) {
+      throw new RuntimeException('The decoded packed asset is invalid.');
+    }
+    if ($asset['gzip']) {
+      // gzdecode ignores trailing bytes and concatenated members. Browsers may
+      // decode all members, so require exactly one complete stream as well.
+      // The bounded decode above has already limited this member's output.
+      unset($body);
+      $inflate = inflate_init(ZLIB_ENCODING_GZIP);
+      $decoded = $inflate === false ? false : @inflate_add($inflate, $compressed, ZLIB_FINISH);
+      if ($decoded === false || inflate_get_status($inflate) !== ZLIB_STREAM_END ||
+          inflate_get_read_len($inflate) !== strlen($compressed)) {
+        throw new RuntimeException('The packed asset gzip stream is incomplete or has trailing bytes.');
+      }
+      unset($decoded, $compressed, $inflate);
+    }
+    $offset += $asset['length'];
+  }
+  if ($offset !== $payloadBytes || substr($source, -strlen($end)) !== $end) {
+    throw new RuntimeException('The packed asset payload has an invalid length.');
+  }
+}
+
 function mc_update_source_info($file): array {
   $stat = fstat($file);
   $bytes = $stat === false ? 0 : (int)$stat['size'];
@@ -1851,6 +1972,7 @@ function mc_update_source_info($file): array {
       $versions[] = substr($arguments[3][1], 1, -1);
     }
   }
+  mc_update_validate_pack($source, $tokens);
   unset($tokens);
   if (count($versions) !== 1 || !hash_equals($matches[1], $versions[0])) {
     throw new RuntimeException('The downloaded source does not contain a unique literal version definition.');

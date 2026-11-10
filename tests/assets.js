@@ -122,7 +122,7 @@ async function main() {
       assert.deepEqual(fs.readdirSync(path.join(base, 'sessions')), []);
     });
     await test('handles encoding quality and explicit GZIP refusal', async () => {
-      for (const encoding of ['gzip;q=0', '*;q=1, gzip;q=0']) {
+      for (const encoding of ['gzip;q=0', '*;q=1, gzip;q=0', 'gzip;q=0.2, identity;q=1', 'gzip;q=0.5']) {
         const response = await request(assetUrl('app-js'), {'Accept-Encoding':encoding});
         assert.equal(response.status, 200);
         assert.equal(response.headers['content-encoding'], undefined);

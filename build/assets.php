@@ -45,7 +45,7 @@ function mc_asset_serve(): void {
   }
   $asset = $assets[$name];
   $encodings = mc_asset_encodings();
-  $gzip = $asset['gzip'] && $encodings['gzip'] > 0;
+  $gzip = $asset['gzip'] && $encodings['gzip'] > 0 && $encodings['gzip'] >= $encodings['identity'];
   if (!$gzip && $encodings['identity'] <= 0) {
     mc_asset_fail(406, 'No acceptable asset encoding.');
   }

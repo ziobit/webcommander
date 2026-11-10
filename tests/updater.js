@@ -52,8 +52,13 @@ async function main() {
   const futureSource = source.replace("define('MC_VERSION', '" + currentVersion + "')", "define('MC_VERSION', '" + nextVersion + "')");
   assert.ok(source.endsWith(end), 'The release must retain its final completeness marker.');
   assert.match(source, /MC_UPDATE_MAX_BYTES', 16 \* 1024 \* 1024/);
-  const release = bytes => bytesFromText(futureSource.slice(0, -end.length) +
-    '<!--' + 'x'.repeat(Math.max(0, bytes - Buffer.byteLength(futureSource, 'latin1') - 7)) + '-->' + end);
+  // Size padding is HTML before the binary boundary, never untracked pack bytes.
+  const release = bytes => {
+    const padding = '<!--' + 'x'.repeat(Math.max(0, bytes - Buffer.byteLength(futureSource, 'latin1') - 7)) + '-->';
+    const boundary = futureSource.indexOf('<?php __halt_compiler();');
+    return bytesFromText(boundary < 0 ? futureSource.slice(0, -end.length) + padding + end :
+      futureSource.slice(0, boundary) + padding + futureSource.slice(boundary));
+  };
   const large = release(3 * 1024 * 1024);
   assert.ok(large.length > 2 * 1024 * 1024 && large.length < cap);
   let fixture = {body:large};
@@ -248,6 +253,14 @@ async function main() {
       await rejected('rejects a short Content-Length download with otherwise complete PHP', {body:large, length:large.length + 100}, /complete|truncated|length|interrupted/);
       await rejected('rejects a truncated chunked HTML tail', {body:large.subarray(0, -100), mode:'chunked'}, /end marker/);
       await rejected('rejects a truncated tail without a length header', {body:large.subarray(0, -100), mode:'no-length'}, /end marker/);
+      const packedBoundary = futureSource.indexOf('<?php __halt_compiler();');
+      if (packedBoundary >= 0) {
+        const damagedPack = bytesFromText(futureSource);
+        damagedPack[packedBoundary + '<?php __halt_compiler();'.length + 20] ^= 1;
+        await rejected('rejects corrupt packed bytes with an intact end marker', {body:damagedPack}, /packed asset/);
+        const shortenedPack = Buffer.concat([bytesFromText(futureSource.slice(0, -end.length - 1)), Buffer.from(end)]);
+        await rejected('rejects truncated packed bytes with an intact end marker', {body:shortenedPack}, /packed asset/);
+      }
       await rejected('rejects an empty update', {body:Buffer.alloc(0)}, /empty file/);
       await rejected('rejects a non-PHP response', {body:bytesFromText('<html>not an update</html>')}, /valid WebCommander/);
       await rejected('rejects invalid PHP syntax', {body:bytesFromText(futureSource.replace('declare(strict_types=1);', 'declare(strict_types=1);\n$broken = ;'))}, /syntax validation/);
@@ -273,7 +286,7 @@ async function main() {
         assert.equal(fs.readFileSync(target, 'latin1'), changed);
       });
       await test('checks legacy versions without a new end marker', async () => {
-        fixture = {body:bytesFromText(futureSource.replace("define('MC_VERSION', '" + nextVersion + "')", "define('MC_VERSION', '1.10')").slice(0, -end.length))};
+        fixture = {body:bytesFromText("<?php\n// WebCommander - single-file\ndefine('MC_VERSION', '1.10');\n?>Legacy HTML")};
         const checked = await api('update_check');
         assert.equal(checked.success, true);
         assert.equal(checked.updateAvailable, false);

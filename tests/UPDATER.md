@@ -66,3 +66,12 @@ are confined to test copies; the production application has no test hooks.
   never reports restoration merely because it attempted to write old bytes.
   A process termination after replacement can also leave this verified backup;
   the installed file was already fully staged and validated before the rename.
+
+### Packed release upgrade bridge
+
+Run `node tests/packed_updates.js webcommander.php path/to/packed-v1.12.php`
+on PHP 7.4 and a current PHP 8 release to verify binary payload validation
+before installing a packed release. PHP zlib is required for this validation.
+The updater reads the literal manifest without executing downloaded PHP and
+checks asset ranges, stored hashes, decoded sizes and hashes, and pack completeness.
+Keep this unpacked bridge release below the old updater's 2 MiB limit.

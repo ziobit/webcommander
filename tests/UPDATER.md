@@ -67,11 +67,15 @@ are confined to test copies; the production application has no test hooks.
   A process termination after replacement can also leave this verified backup;
   the installed file was already fully staged and validated before the rename.
 
-### Packed release upgrade bridge
+### Packed release integrity
 
-Run `node tests/packed_updates.js webcommander.php path/to/packed-v1.12.php`
-on PHP 7.4 and a current PHP 8 release to verify binary payload validation
-before installing a packed release. PHP zlib is required for this validation.
-The updater reads the literal manifest without executing downloaded PHP and
-checks asset ranges, stored hashes, decoded sizes and hashes, and pack completeness.
-Keep this unpacked bridge release below the old updater's 2 MiB limit.
+Run `node tests/packed_updates.js [updater.php] [packed-candidate.php]` to
+exercise the non-executing manifest parser, stored and decoded hashes, range
+bounds, and incomplete payload rejection. To cover the upgrade bridge, pass
+the v1.11 file as the updater and the built v1.12 file as the candidate. Run
+both combinations on PHP 7.4 and a current PHP 8 release. PHP zlib is required
+to validate packed releases. The original unpacked v1.11 release must remain
+under 2 MiB for older installations to receive the larger-update safeguard.
+
+The size-boundary fixtures put padding before `__halt_compiler()`, since all
+bytes after it must belong to the manifest's contiguous assets and final marker.

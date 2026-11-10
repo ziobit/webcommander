@@ -1,0 +1,12 @@
+{
+  "name": "webcommander-asset-build",
+  "private": true,
+  "scripts": {
+    "build": "node pack-assets.js",
+    "check": "node pack-assets.js --check"
+  },
+  "dependencies": {
+    "clean-css": "5.3.3",
+    "terser": "5.44.0"
+  }
+}

@@ -20,7 +20,9 @@ const {once} = require('node:events');
 
 const cap = 16 * 1024 * 1024;
 const end = '<!-- WebCommander update end -->\n';
-const digest = data => crypto.createHash('sha256').update(data).digest('hex');
+// Latin-1 preserves every compiled payload byte while editing ASCII PHP test hooks.
+const bytesFromText = data => Buffer.from(data, 'latin1');
+const digest = data => crypto.createHash('sha256').update(typeof data === 'string' ? bytesFromText(data) : data).digest('hex');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const php = process.env.PHP_BINARY || 'php';
 const phpIni = process.env.PHP_INI ? ['-c', process.env.PHP_INI] : [];
@@ -44,14 +46,19 @@ async function stop(child) {
 
 async function main() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'webcommander-updater-'));
-  const source = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', 'webcommander.php'), 'utf8');
+  const source = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', 'webcommander.php'), 'latin1');
   const currentVersion = source.match(/define\('MC_VERSION', '([^']+)'\)/)[1];
   const nextVersion = currentVersion.split('.')[0] + '.' + (Number(currentVersion.split('.')[1]) + 1);
   const futureSource = source.replace("define('MC_VERSION', '" + currentVersion + "')", "define('MC_VERSION', '" + nextVersion + "')");
   assert.ok(source.endsWith(end), 'The release must retain its final completeness marker.');
   assert.match(source, /MC_UPDATE_MAX_BYTES', 16 \* 1024 \* 1024/);
-  const release = bytes => Buffer.from(futureSource.slice(0, -end.length) +
-    '<!--' + 'x'.repeat(Math.max(0, bytes - Buffer.byteLength(futureSource) - 7)) + '-->' + end);
+  // Size padding is HTML before the binary boundary, never untracked pack bytes.
+  const release = bytes => {
+    const padding = '<!--' + 'x'.repeat(Math.max(0, bytes - Buffer.byteLength(futureSource, 'latin1') - 7)) + '-->';
+    const boundary = futureSource.indexOf('<?php __halt_compiler();');
+    return bytesFromText(boundary < 0 ? futureSource.slice(0, -end.length) + padding + end :
+      futureSource.slice(0, boundary) + padding + futureSource.slice(boundary));
+  };
   const large = release(3 * 1024 * 1024);
   assert.ok(large.length > 2 * 1024 * 1024 && large.length < cap);
   let fixture = {body:large};
@@ -119,7 +126,7 @@ async function main() {
         installedSource = installedSource.replace("if (function_exists('curl_init')) {", 'if (false) {');
       }
       const reset = (fault = '') => {
-        fs.writeFileSync(target, installedSource);
+        fs.writeFileSync(target, installedSource, 'latin1');
         fs.chmodSync(target, 0o640);
         fs.writeFileSync(control, JSON.stringify({fault}));
         fixture = {body:large};
@@ -179,7 +186,7 @@ async function main() {
         assert.deepEqual(fs.readdirSync(temp), [], 'Download files leaked.');
         assert.deepEqual(fs.readFileSync(path.join(root, config)), configBytes, 'Authentication configuration changed.');
       };
-      const unchanged = () => assert.equal(fs.readFileSync(target, 'utf8'), installedSource, 'The running source changed after a failed update.');
+      const unchanged = () => assert.equal(fs.readFileSync(target, 'latin1'), installedSource, 'The running source changed after a failed update.');
       async function test(name, callback) {
         reset();
         await callback();
@@ -246,32 +253,40 @@ async function main() {
       await rejected('rejects a short Content-Length download with otherwise complete PHP', {body:large, length:large.length + 100}, /complete|truncated|length|interrupted/);
       await rejected('rejects a truncated chunked HTML tail', {body:large.subarray(0, -100), mode:'chunked'}, /end marker/);
       await rejected('rejects a truncated tail without a length header', {body:large.subarray(0, -100), mode:'no-length'}, /end marker/);
+      const packedBoundary = futureSource.indexOf('<?php __halt_compiler();');
+      if (packedBoundary >= 0) {
+        const damagedPack = bytesFromText(futureSource);
+        damagedPack[packedBoundary + '<?php __halt_compiler();'.length + 20] ^= 1;
+        await rejected('rejects corrupt packed bytes with an intact end marker', {body:damagedPack}, /packed asset/);
+        const shortenedPack = Buffer.concat([bytesFromText(futureSource.slice(0, -end.length - 1)), Buffer.from(end)]);
+        await rejected('rejects truncated packed bytes with an intact end marker', {body:shortenedPack}, /packed asset/);
+      }
       await rejected('rejects an empty update', {body:Buffer.alloc(0)}, /empty file/);
-      await rejected('rejects a non-PHP response', {body:Buffer.from('<html>not an update</html>')}, /valid WebCommander/);
-      await rejected('rejects invalid PHP syntax', {body:Buffer.from(futureSource.replace('declare(strict_types=1);', 'declare(strict_types=1);\n$broken = ;'))}, /syntax validation/);
-      await rejected('rejects a version that exists only in a comment', {body:Buffer.from("<?php\n// WebCommander - single-file\n// define('MC_VERSION', '" + nextVersion + "');\n?>" + end)}, /literal version/);
-      await rejected('rejects duplicate version definitions', {body:Buffer.from(futureSource.replace('declare(strict_types=1);', "declare(strict_types=1);\ndefine('MC_VERSION', '" + nextVersion + "');"))}, /unique literal version/);
-      await rejected('rejects a missing version', {body:Buffer.from(futureSource.replace(/define\('MC_VERSION', '[^']+'\);/, ''))}, /valid version/);
+      await rejected('rejects a non-PHP response', {body:bytesFromText('<html>not an update</html>')}, /valid WebCommander/);
+      await rejected('rejects invalid PHP syntax', {body:bytesFromText(futureSource.replace('declare(strict_types=1);', 'declare(strict_types=1);\n$broken = ;'))}, /syntax validation/);
+      await rejected('rejects a version that exists only in a comment', {body:bytesFromText("<?php\n// WebCommander - single-file\n// define('MC_VERSION', '" + nextVersion + "');\n?>" + end)}, /literal version/);
+      await rejected('rejects duplicate version definitions', {body:bytesFromText(futureSource.replace('declare(strict_types=1);', "declare(strict_types=1);\ndefine('MC_VERSION', '" + nextVersion + "');"))}, /unique literal version/);
+      await rejected('rejects a missing version', {body:bytesFromText(futureSource.replace(/define\('MC_VERSION', '[^']+'\);/, ''))}, /valid version/);
       await rejected('rejects compressed responses', {body:large, encoding:'gzip'}, /encoding/);
       await rejected('rejects partial HTTP responses', {body:large, status:206}, /HTTP 206/);
-      await rejected('rejects redirects without following them', {body:Buffer.from('moved'), status:302}, /HTTP 302/);
+      await rejected('rejects redirects without following them', {body:bytesFromText('moved'), status:302}, /HTTP 302/);
       assert.equal(redirectRequests, 0);
       await test('refuses a non-HTTPS update source', async () => {
         const changed = installedSource.replace(updateUrl, updateUrl.replace('https:', 'http:'));
-        fs.writeFileSync(target, changed);
+        fs.writeFileSync(target, changed, 'latin1');
         const before = fixtureRequests;
         assert.match((await install()).message, /must use HTTPS/);
         assert.equal(fixtureRequests, before);
-        assert.equal(fs.readFileSync(target, 'utf8'), changed);
+        assert.equal(fs.readFileSync(target, 'latin1'), changed);
       });
       await test('keeps TLS hostname verification enabled', async () => {
         const changed = installedSource.replace(updateUrl, updateUrl.replace('127.0.0.1', 'localhost'));
-        fs.writeFileSync(target, changed);
+        fs.writeFileSync(target, changed, 'latin1');
         assert.match((await install()).message, /Cannot download/);
-        assert.equal(fs.readFileSync(target, 'utf8'), changed);
+        assert.equal(fs.readFileSync(target, 'latin1'), changed);
       });
       await test('checks legacy versions without a new end marker', async () => {
-        fixture = {body:Buffer.from(futureSource.replace("define('MC_VERSION', '" + nextVersion + "')", "define('MC_VERSION', '1.10')").slice(0, -end.length))};
+        fixture = {body:bytesFromText("<?php\n// WebCommander - single-file\ndefine('MC_VERSION', '1.10');\n?>Legacy HTML")};
         const checked = await api('update_check');
         assert.equal(checked.success, true);
         assert.equal(checked.updateAvailable, false);
@@ -292,7 +307,7 @@ async function main() {
       });
       await test('rejects changed bytes even when the version stays the same', async () => {
         const checked = await api('update_check');
-        fixture = {body:Buffer.from(futureSource)};
+        fixture = {body:bytesFromText(futureSource)};
         const result = await install({expected_sha256:checked.sha256});
         assert.equal(result.success, false);
         assert.match(result.message, /available update changed/);
@@ -300,7 +315,7 @@ async function main() {
       });
       await test('validates without executing the downloaded source', async () => {
         const probe = path.join(root, 'executed.txt');
-        fixture = {body:Buffer.from(futureSource.replace('declare(strict_types=1);', 'declare(strict_types=1);\nfile_put_contents(' + JSON.stringify(probe) + ', "executed");'))};
+        fixture = {body:bytesFromText(futureSource.replace('declare(strict_types=1);', 'declare(strict_types=1);\nfile_put_contents(' + JSON.stringify(probe) + ', "executed");'))};
         assert.equal((await api('update_check')).success, true);
         assert.equal(fs.existsSync(probe), false);
       });
@@ -332,14 +347,14 @@ async function main() {
         const result = await install();
         assert.equal(result.success, false);
         assert.match(result.message, /current source changed/);
-        assert.equal(fs.readFileSync(target, 'utf8'), installedSource + '\n<!-- concurrent edit -->\n');
+        assert.equal(fs.readFileSync(target, 'latin1'), installedSource + '\n<!-- concurrent edit -->\n');
       });
       await test('preserves an independent edit made during the download', async () => {
         fixture = {body:large, onRequest:() => fs.appendFileSync(target, '\n<!-- concurrent download edit -->\n')};
         const result = await install();
         assert.equal(result.success, false);
         assert.match(result.message, /current source changed/);
-        assert.equal(fs.readFileSync(target, 'utf8'), installedSource + '\n<!-- concurrent download edit -->\n');
+        assert.equal(fs.readFileSync(target, 'latin1'), installedSource + '\n<!-- concurrent download edit -->\n');
       });
       for (const fault of ['rollback-fail', 'rollback-verify-fail']) {
         reset(fault);
@@ -349,7 +364,7 @@ async function main() {
         assert.doesNotMatch(result.message, /was restored/);
         const backups = temporaryFiles();
         assert.equal(backups.length, 1);
-        assert.equal(fs.readFileSync(path.join(root, backups[0]), 'utf8'), installedSource);
+        assert.equal(fs.readFileSync(path.join(root, backups[0]), 'latin1'), installedSource);
         assert.ok(result.message.includes(path.join(root, backups[0])));
         assert.equal(fs.statSync(path.join(root, backups[0])).mode & 0o777, 0o600);
         fs.unlinkSync(path.join(root, backups[0]));
@@ -385,11 +400,11 @@ async function main() {
       await test('refuses validation with insufficient memory', async () => {
         const original = installedSource;
         // This isolated copy lowers its own limit before invoking real handlers.
-        fs.writeFileSync(target, installedSource.replace('error_reporting(E_ALL);', 'ini_set("memory_limit", "48M");\nerror_reporting(E_ALL);'));
+        fs.writeFileSync(target, installedSource.replace('error_reporting(E_ALL);', 'ini_set("memory_limit", "48M");\nerror_reporting(E_ALL);'), 'latin1');
         const result = await install();
         assert.equal(result.success, false);
         assert.match(result.message, /Insufficient PHP memory/);
-        assert.equal(fs.readFileSync(target, 'utf8'), original.replace('error_reporting(E_ALL);', 'ini_set("memory_limit", "48M");\nerror_reporting(E_ALL);'));
+        assert.equal(fs.readFileSync(target, 'latin1'), original.replace('error_reporting(E_ALL);', 'ini_set("memory_limit", "48M");\nerror_reporting(E_ALL);'));
       });
       await stop(server);
       server = null;
